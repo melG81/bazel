@@ -18,6 +18,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionCacheAwareAction;
@@ -32,7 +33,7 @@ import com.google.devtools.build.lib.actions.CommandLines.CommandLineLimits;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
-import com.google.devtools.build.lib.actions.ResourceSet;
+import com.google.devtools.build.lib.actions.ResourceSetOrBuilder;
 import com.google.devtools.build.lib.actions.RunfilesSupplier;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
@@ -77,7 +78,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
    *     modified
    * @param outputs the set of all files written by this action; must not be subsequently modified.
    * @param primaryOutput the primary output of this action
-   * @param resourceSet the resources consumed by executing this Action
+   * @param resourceSetOrBuilder the resources consumed by executing this Action
    * @param commandLines the command lines to execute. This includes the main argv vector and any
    *     param file-backed command lines.
    * @param commandLineLimits the command line limits, from the build configuration
@@ -89,7 +90,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
    * @param runfilesSupplier {@link RunfilesSupplier}s describing the runfiles for the action
    * @param mnemonic the mnemonic that is reported in the master log
    * @param unusedInputsList file containing the list of inputs that were not used by the action.
-   * @param shadowedAction the action to use its discovered inputs during execution
+   * @param shadowedAction the action to use its inputs and environment during execution
    */
   public StarlarkAction(
       ActionOwner owner,
@@ -97,7 +98,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
       NestedSet<Artifact> inputs,
       Iterable<Artifact> outputs,
       Artifact primaryOutput,
-      ResourceSet resourceSet,
+      ResourceSetOrBuilder resourceSetOrBuilder,
       CommandLines commandLines,
       CommandLineLimits commandLineLimits,
       boolean isShellCommand,
@@ -116,7 +117,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
             : inputs,
         outputs,
         primaryOutput,
-        resourceSet,
+        resourceSetOrBuilder,
         commandLines,
         commandLineLimits,
         isShellCommand,
@@ -167,8 +168,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
   public NestedSet<Artifact> discoverInputs(ActionExecutionContext actionExecutionContext)
       throws ActionExecutionException, InterruptedException {
     // If the Starlark action shadows another action and the shadowed action discovers its inputs,
-    // we depend on the outputs of the action doing input discovery and it should know its inputs
-    // after having been executed.
+    // we get the shadowed action's discovered inputs and append it to the Starlark action inputs.
     if (shadowedAction.isPresent() && shadowedAction.get().discoversInputs()) {
       Action shadowedActionObj = shadowedAction.get();
 
@@ -310,6 +310,39 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
         || (shadowedAction.isPresent() && shadowedAction.get().discoversInputs());
   }
 
+  /**
+   * Return a spawn that is representative of the command that this Action will execute in the given
+   * client environment.
+   *
+   * <p>Overriding this method to add the environment of the shadowed action, if any, to the
+   * execution spawn.
+   */
+  @Override
+  public Spawn getSpawn(ActionExecutionContext actionExecutionContext)
+      throws CommandLineExpansionException, InterruptedException {
+    return getSpawn(
+        actionExecutionContext.getArtifactExpander(),
+        getEffectiveEnvironment(actionExecutionContext.getClientEnv()),
+        /*envResolved=*/ true,
+        actionExecutionContext.getTopLevelFilesets());
+  }
+
+  @Override
+  public ImmutableMap<String, String> getEffectiveEnvironment(Map<String, String> clientEnv)
+      throws CommandLineExpansionException {
+    Map<String, String> environment = Maps.newLinkedHashMapWithExpectedSize(env.size());
+
+    if (shadowedAction.isPresent()) {
+      // Put all the variables of the shadowed action's environment
+      environment.putAll(shadowedAction.get().getEffectiveEnvironment(clientEnv));
+    }
+
+    // This order guarantees that the Starlark action can overwrite any variable in its shadowed
+    // action environment with a new value.
+    env.resolve(environment, clientEnv);
+    return ImmutableMap.copyOf(environment);
+  }
+
   /** Builder class to construct {@link StarlarkAction} instances. */
   public static class Builder extends SpawnAction.Builder {
 
@@ -334,7 +367,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
         NestedSet<Artifact> inputsAndTools,
         ImmutableList<Artifact> outputs,
         Artifact primaryOutput,
-        ResourceSet resourceSet,
+        ResourceSetOrBuilder resourceSetOrBuilder,
         CommandLines commandLines,
         CommandLineLimits commandLineLimits,
         boolean isShellCommand,
@@ -360,7 +393,7 @@ public final class StarlarkAction extends SpawnAction implements ActionCacheAwar
           inputsAndTools,
           outputs,
           primaryOutput,
-          resourceSet,
+          resourceSetOrBuilder,
           commandLines,
           commandLineLimits,
           isShellCommand,

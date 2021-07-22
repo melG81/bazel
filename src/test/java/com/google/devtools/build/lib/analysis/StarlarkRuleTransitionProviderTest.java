@@ -16,78 +16,29 @@ package com.google.devtools.build.lib.analysis;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.analysis.config.BuildOptions;
-import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.EmptyToNullLabelConverter;
-import com.google.devtools.build.lib.analysis.config.Fragment;
-import com.google.devtools.build.lib.analysis.config.FragmentOptions;
-import com.google.devtools.build.lib.analysis.config.RequiresOptions;
 import com.google.devtools.build.lib.analysis.config.transitions.ConfigurationTransition;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.analysis.util.DummyTestFragment;
+import com.google.devtools.build.lib.analysis.util.DummyTestFragment.DummyTestOptions;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.rules.cpp.CppOptions;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
-import com.google.devtools.common.options.Option;
-import com.google.devtools.common.options.OptionDocumentationCategory;
-import com.google.devtools.common.options.OptionEffectTag;
+import com.google.testing.junit.testparameterinjector.TestParameterInjector;
+import com.google.testing.junit.testparameterinjector.TestParameters;
 import java.util.List;
 import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 /** Tests for StarlarkRuleTransitionProvider. */
-@RunWith(JUnit4.class)
+@RunWith(TestParameterInjector.class)
 public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
-
-  /**
-   * A fragment containing flags that exhibit different flag behaviors for easy testing purposes.
-   */
-  @RequiresOptions(options = {DummyTestOptions.class})
-  public static class DummyTestFragment extends Fragment {
-    public DummyTestFragment(BuildOptions buildOptions) {}
-  }
-
-  /** Flags that exhibit an variety of flag behaviors. */
-  public static class DummyTestOptions extends FragmentOptions {
-    @Option(
-        name = "nullable_option",
-        converter = EmptyToNullLabelConverter.class,
-        defaultValue = "",
-        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-        effectTags = {OptionEffectTag.NO_OP},
-        help = "An option that is sometimes set to null.")
-    public Label nullable;
-
-    @Option(
-        name = "foo",
-        defaultValue = "",
-        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-        effectTags = {OptionEffectTag.NO_OP},
-        help = "A regular string-typed option")
-    public String foo;
-
-    @Option(
-        name = "bar",
-        defaultValue = "",
-        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-        effectTags = {OptionEffectTag.NO_OP},
-        help = "A regular string-typed option")
-    public String bar;
-
-    @Option(
-        name = "bool",
-        defaultValue = "false",
-        documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-        effectTags = {OptionEffectTag.NO_OP},
-        help = "A regular bool-typed option")
-    public boolean bool;
-  }
-
   @Override
   protected ConfiguredRuleClassProvider createRuleClassProvider() {
     ConfiguredRuleClassProvider.Builder builder = new ConfiguredRuleClassProvider.Builder();
@@ -97,7 +48,7 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
   }
 
   private void writeAllowlistFile() throws Exception {
-    scratch.file(
+    scratch.overwriteFile(
         "tools/allowlists/function_transition_allowlist/BUILD",
         "package_group(",
         "    name = 'function_transition_allowlist',",
@@ -115,7 +66,7 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "def _impl(settings, attr):",
         "  return 'cpu=k8'",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -142,9 +93,9 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {'//command_line_option:test_arg': ['post-transition']}",
+        "  return {'//command_line_option:foo': 'post-transition'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -160,11 +111,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "  })");
     scratch.file("test/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
 
-    useConfiguration("--test_arg=pre-transition");
+    useConfiguration("--foo=pre-transition");
 
     BuildConfiguration configuration = getConfiguration(getConfiguredTarget("//test"));
-    assertThat(configuration.getOptions().get(TestOptions.class).testArguments)
-        .containsExactly("post-transition");
+    assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
+        .isEqualTo("post-transition");
   }
 
   @Test
@@ -173,12 +124,12 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {'//command_line_option:test_arg': ",
-        "    [settings['//command_line_option:test_arg'][0]+'->post-transition']}",
+        "  return {'//command_line_option:foo': ",
+        "    settings['//command_line_option:foo']+'->post-transition'}",
         "my_transition = transition(",
         "  implementation = _impl,",
-        "  inputs = ['//command_line_option:test_arg'],",
-        "  outputs = ['//command_line_option:test_arg'],",
+        "  inputs = ['//command_line_option:foo'],",
+        "  outputs = ['//command_line_option:foo'],",
         ")");
 
     scratch.file(
@@ -197,11 +148,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
 
     scratch.file("test/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
 
-    useConfiguration("--test_arg=pre-transition");
+    useConfiguration("--foo=pre-transition");
 
     BuildConfiguration configuration = getConfiguration(getConfiguredTarget("//test"));
-    assertThat(configuration.getOptions().get(TestOptions.class).testArguments)
-        .containsExactly("pre-transition->post-transition");
+    assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
+        .isEqualTo("pre-transition->post-transition");
   }
 
   @Test
@@ -210,9 +161,9 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {'//command_line_option:test_arg': ['post-transition']}",
+        "  return {'//command_line_option:foo': 'post-transition'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -265,11 +216,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "test/transitions.bzl",
         "def _impl(settings, attr):",
         "  return [",
-        "      {'//command_line_option:test_arg': ['split_one']},",
-        "      {'//command_line_option:test_arg': ['split_two']},",
+        "      {'//command_line_option:foo': 'split_one'},",
+        "      {'//command_line_option:foo': 'split_two'},",
         "  ]",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -298,11 +249,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "test/transitions.bzl",
         "def _impl(settings, attr):",
         "  if (attr.my_configurable_attr):",
-        "    return {'//command_line_option:test_arg': ['true']}",
+        "    return {'//command_line_option:foo': 'true'}",
         "  else:",
-        "    return {'//command_line_option:test_arg': ['false']}",
+        "    return {'//command_line_option:foo': 'false'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -330,7 +281,7 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         ")",
         "config_setting(",
         "  name = 'true-config',",
-        "  values = {'test_arg': 'true'},",
+        "  values = {'foo': 'true'},",
         ")");
 
     reporter.removeHandler(failFastHandler);
@@ -348,11 +299,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "test/transitions.bzl",
         "def _impl(settings, attr):",
         "  if attr.dict_attr[Label('//test:key')] == 'value':",
-        "    return {'//command_line_option:test_arg': ['post-transition']}",
+        "    return {'//command_line_option:foo': 'post-transition'}",
         "  else:",
-        "    return {'//command_line_option:test_arg': ['uh-oh']}",
+        "    return {'//command_line_option:foo': 'uh-oh'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -378,11 +329,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         ")",
         "simple_rule(name = 'key')");
 
-    useConfiguration("--test_arg=pre-transition");
+    useConfiguration("--foo=pre-transition");
 
     BuildConfiguration configuration = getConfiguration(getConfiguredTarget("//test"));
-    assertThat(configuration.getOptions().get(TestOptions.class).testArguments)
-        .containsExactly("post-transition");
+    assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
+        .isEqualTo("post-transition");
   }
 
   private static final String CUTE_ANIMAL_DEFAULT =
@@ -420,25 +371,6 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "  name = 'cute-animal-fact',",
         "  build_setting_default = '" + CUTE_ANIMAL_DEFAULT + "',",
         ")");
-  }
-
-  @Test
-  public void testCannotTransitionOnBuildSettingWithoutFlag() throws Exception {
-    setBuildLanguageOptions("--experimental_starlark_config_transitions=false");
-    scratch.file(
-        "test/transitions.bzl",
-        "def _transition_impl(settings, attr):",
-        "  return {'//test:cute-animal-fact': 'puffins mate for life'}",
-        "my_transition = transition(",
-        "  implementation = _transition_impl,",
-        "  inputs = [],",
-        "  outputs = ['//test:cute-animal-fact']",
-        ")");
-    writeRulesBuildSettingsAndBUILDforBuildSettingTransitionTests();
-
-    reporter.removeHandler(failFastHandler);
-    getConfiguredTarget("//test");
-    assertContainsEvent("transitions on Starlark-defined build settings is experimental");
   }
 
   @Test
@@ -815,7 +747,7 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         ")",
         "config_setting(",
         "  name = 'true-config',",
-        "  values = {'test_arg': 'true'},",
+        "  values = {'foo': 'true'},",
         ")",
         "string_flag(",
         "  name = 'cute-animal-fact',",
@@ -930,9 +862,9 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings):",
-        "  return {'//command_line_option:test_arg': ['post-transition']}",
+        "  return {'//command_line_option:foo': 'post-transition'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -986,7 +918,7 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
 
   @Test
   public void testCannotTransitionWithoutAllowlist() throws Exception {
-    scratch.file(
+    scratch.overwriteFile(
         "tools/allowlists/function_transition_allowlist/BUILD",
         "package_group(",
         "    name = 'function_transition_allowlist',",
@@ -995,9 +927,9 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {'//command_line_option:test_arg': ['post-transition']}",
+        "  return {'//command_line_option:foo': 'post-transition'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -1009,7 +941,7 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         ")");
     scratch.file("test/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
 
-    useConfiguration("--test_arg=pre-transition");
+    useConfiguration("--foo=pre-transition");
 
     reporter.removeHandler(failFastHandler);
     getConfiguredTarget("//test");
@@ -1023,15 +955,15 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "test/transitions.bzl",
         "def _impl(settings, attr):",
         "  if settings['//command_line_option:nullable_option'] == None:",
-        "    return {'//command_line_option:test_arg': ['post-transition']}",
+        "    return {'//command_line_option:foo': 'post-transition'}",
         "  else:",
-        "    return {'//command_line_option:test_arg': settings['//command_line_option:test_arg']}",
+        "    return {'//command_line_option:foo': settings['//command_line_option:foo']}",
         "my_transition = transition(implementation = _impl,",
         "  inputs = [",
-        "    '//command_line_option:test_arg',",
+        "    '//command_line_option:foo',",
         "    '//command_line_option:nullable_option'",
         "  ],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -1047,11 +979,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "  })");
     scratch.file("test/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
 
-    useConfiguration("--nullable_option=", "--test_arg=pre-transition");
+    useConfiguration("--nullable_option=", "--foo=pre-transition");
 
     BuildConfiguration configuration = getConfiguration(getConfiguredTarget("//test"));
-    assertThat(configuration.getOptions().get(TestOptions.class).testArguments)
-        .containsExactly("post-transition");
+    assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
+        .isEqualTo("post-transition");
   }
 
   @Test
@@ -1061,9 +993,9 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {'//command_line_option:test_arg': ['post-transition']}",
+        "  return {'//command_line_option:foo': 'post-transition'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -1080,11 +1012,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "neverland/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
     scratch.file("test/BUILD");
-    useConfiguration("--test_arg=pre-transition");
+    useConfiguration("--foo=pre-transition");
 
     BuildConfiguration configuration = getConfiguration(getConfiguredTarget("//neverland:test"));
-    assertThat(configuration.getOptions().get(TestOptions.class).testArguments)
-        .containsExactly("post-transition");
+    assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
+        .isEqualTo("post-transition");
   }
 
   // TODO(blaze-configurability): We probably want to eventually turn this off. Flip this test when
@@ -1096,9 +1028,9 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "neverland/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {'//command_line_option:test_arg': ['post-transition']}",
+        "  return {'//command_line_option:foo': 'post-transition'}",
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "neverland/rules.bzl",
         "load('//neverland:transitions.bzl', 'my_transition')",
@@ -1115,26 +1047,30 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     scratch.file(
         "test/BUILD", "load('//neverland:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
     scratch.file("neverland/BUILD");
-    useConfiguration("--test_arg=pre-transition");
+    useConfiguration("--foo=pre-transition");
 
     BuildConfiguration configuration = getConfiguration(getConfiguredTarget("//test"));
-    assertThat(configuration.getOptions().get(TestOptions.class).testArguments)
-        .containsExactly("post-transition");
+    assertThat(configuration.getOptions().get(DummyTestOptions.class).foo)
+        .isEqualTo("post-transition");
   }
 
-  /**
-   * Regression test to ensure that an empty dict is not interpreted as a dict of dicts and
-   * generates the proper error message.
-   */
   @Test
-  public void testEmptyReturnDict() throws Exception {
+  @TestParameters({
+    "{"
+        + "returnLine: 'return []',"
+        + "returnLine: 'return {}',"
+        + "returnLine: 'return None',"
+        + "returnLine: 'pass',"
+        + "}"
+  })
+  public void noopReturnValues(String returnLine) throws Exception {
     writeAllowlistFile();
     scratch.file(
         "test/transitions.bzl",
         "def _impl(settings, attr):",
-        "  return {}",
+        "  " + returnLine,
         "my_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//command_line_option:test_arg'])");
+        "  outputs = ['//command_line_option:foo'])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'my_transition')",
@@ -1149,12 +1085,11 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "    ),",
         "  })");
     scratch.file("test/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
-
-    reporter.removeHandler(failFastHandler);
-    getConfiguredTarget("//test");
-    assertContainsEvent(
-        "transition outputs [//command_line_option:test_arg] were "
-            + "not defined by transition function");
+    // --trim_test_configuration means only the top-level configuration has TestOptions.
+    assertConfigurationsEqual(
+        getConfiguration(getConfiguredTarget("//test")),
+        targetConfig,
+        ImmutableSet.of(TestOptions.class));
   }
 
   @Test
@@ -1167,12 +1102,20 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "string_flag = rule(implementation = _impl, build_setting = config.string(flag=True))");
     scratch.file(
         "test/transitions.bzl",
-        "def _impl(settings, attr):",
-        "  return {}",
-        "attr_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//test:attr_transition_output_flag'])",
-        "self_transition = transition(implementation = _impl, inputs = [],",
-        "  outputs = ['//test:self_transition_output_flag'])");
+        "def _attr_impl(settings, attr):",
+        "  return {'//test:attr_transition_output_flag1': 'not default'}",
+        "attr_transition = transition(implementation = _attr_impl, inputs = [],",
+        "  outputs = [",
+        "      '//test:attr_transition_output_flag1',",
+        "      '//test:attr_transition_output_flag2',",
+        "  ])",
+        "def _self_impl(settings, attr):",
+        "  return {'//test:self_transition_output_flag1': 'not default'}",
+        "self_transition = transition(implementation = _self_impl, inputs = [],",
+        "  outputs = [",
+        "      '//test:self_transition_output_flag1',",
+        "      '//test:self_transition_output_flag2',",
+        "  ])");
     scratch.file(
         "test/rules.bzl",
         "load('//test:transitions.bzl', 'attr_transition', 'self_transition')",
@@ -1196,18 +1139,20 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "test/BUILD",
         "load('//test:rules.bzl', 'rule_with_attr_transition', 'rule_with_self_transition')",
         "load('//test:build_settings.bzl', 'string_flag')",
-        "string_flag(name = 'attr_transition_output_flag', build_setting_default='')",
-        "string_flag(name = 'self_transition_output_flag', build_setting_default='')",
+        "string_flag(name = 'attr_transition_output_flag1', build_setting_default='')",
+        "string_flag(name = 'attr_transition_output_flag2', build_setting_default='')",
+        "string_flag(name = 'self_transition_output_flag1', build_setting_default='')",
+        "string_flag(name = 'self_transition_output_flag2', build_setting_default='')",
         "rule_with_attr_transition(name = 'buildme', deps = [':adep'])",
         "rule_with_self_transition(name = 'adep')");
 
     reporter.removeHandler(failFastHandler);
     getConfiguredTarget("//test:buildme");
     assertContainsEvent(
-        "transition outputs [//test:attr_transition_output_flag] were not defined by transition "
+        "transition outputs [//test:attr_transition_output_flag2] were not defined by transition "
             + "function");
     assertContainsEvent(
-        "transition outputs [//test:self_transition_output_flag] were not defined by transition "
+        "transition outputs [//test:self_transition_output_flag2] were not defined by transition "
             + "function");
   }
 
@@ -1397,6 +1342,37 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
     ConfiguredTarget ct = getConfiguredTarget("//test");
     assertNoEvents();
     assertThat(getConfiguration(ct).getOptions().get(CppOptions.class).fissionModes).isEmpty();
+  }
+
+  @Test
+  public void failedTypeConversionOfNativeListOptionNone() throws Exception {
+    writeAllowlistFile();
+    scratch.file(
+        "test/transitions.bzl",
+        "def _impl(settings, attr):",
+        "  return {'//command_line_option:copt': None}",
+        "my_transition = transition(implementation = _impl, inputs = [],",
+        "  outputs = ['//command_line_option:copt'])");
+    scratch.file(
+        "test/rules.bzl",
+        "load('//test:transitions.bzl', 'my_transition')",
+        "def _impl(ctx):",
+        "  return []",
+        "my_rule = rule(",
+        "  implementation = _impl,",
+        "  cfg = my_transition,",
+        "  attrs = {",
+        "    '_allowlist_function_transition': attr.label(",
+        "        default = '//tools/allowlists/function_transition_allowlist',",
+        "    ),",
+        "  })");
+    scratch.file("test/BUILD", "load('//test:rules.bzl', 'my_rule')", "my_rule(name = 'test')");
+
+    reporter.removeHandler(failFastHandler);
+    getConfiguredTarget("//test");
+    assertContainsEvent(
+        "'None' value not allowed for List-type option 'copt'. Please use '[]' instead if trying"
+            + " to set option to empty value.");
   }
 
   @Test
@@ -1677,13 +1653,13 @@ public class StarlarkRuleTransitionProviderTest extends BuildViewTestCase {
         "test/transitions.bzl",
         "def _transition_impl(settings, attr):",
         "  return {",
-        "    '//command_line_option:test_arg': ['blah'],",
+        "    '//command_line_option:foo': 'blah',",
         "  }",
         "my_transition = transition(",
         "  implementation = _transition_impl,",
         "  inputs = [],",
         "  outputs = [",
-        "    '//command_line_option:test_arg',",
+        "    '//command_line_option:foo',",
         "  ]",
         ")");
     writeAllowlistFile();

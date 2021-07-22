@@ -357,10 +357,6 @@ static vector<string> GetServerExeArgs(const blaze_util::Path &jvm_path,
   startup_options.AddJVMArgumentPrefix(jvm_path.GetParent().GetParent(),
                                        &result);
 
-  result.push_back("-XX:+HeapDumpOnOutOfMemoryError");
-  result.push_back("-XX:HeapDumpPath=" +
-                   startup_options.output_base.AsJvmArgument());
-
   // TODO(b/109998449): only assume JDK >= 9 for embedded JDKs
   if (!startup_options.GetEmbeddedJavabase().IsEmpty()) {
     // quiet warnings from com.google.protobuf.UnsafeUtil,
@@ -1053,9 +1049,13 @@ static bool IsVolatileArg(const string &arg) {
   // not used at server startup to be part of the startup command line. The
   // server command line difference logic can be simplified then.
   static const std::set<string> volatile_startup_options = {
-      "--option_sources=",       "--max_idle_secs=",
-      "--connect_timeout_secs=", "--local_startup_timeout_secs=",
-      "--client_debug=",         "--preemptible="};
+      "--option_sources=", "--max_idle_secs=", "--connect_timeout_secs=",
+      "--local_startup_timeout_secs=", "--client_debug=", "--preemptible=",
+      // Internally, -XX:HeapDumpPath is set automatically via the user's TMPDIR
+      // environment variable. Since that can change based on the shell, we
+      // tolerate changes to it. Note that an explicit setting of
+      // -XX:HeapDumpPath via --host_jvm_args *will* trigger a restart.
+      "-XX:HeapDumpPath="};
 
   // Split arg based on the first "=" if one exists in arg.
   const string::size_type eq_pos = arg.find_first_of('=');
@@ -1714,14 +1714,19 @@ bool BlazeServer::Connect() {
   assert(!Connected());
 
   blaze_util::Path server_dir = output_base_.GetRelative("server");
-  std::string port;
-  std::string ipv4_prefix = "127.0.0.1:";
-  std::string ipv6_prefix_1 = "[0:0:0:0:0:0:0:1]:";
-  std::string ipv6_prefix_2 = "[::1]:";
 
-  if (!blaze_util::ReadFile(server_dir.GetRelative("command_port"), &port)) {
+  command_server::ServerInfo server_info;
+  std::string bytes;
+  if (!blaze_util::ReadFile(server_dir.GetRelative("server_info.rawproto"),
+                            &bytes) ||
+      !server_info.ParseFromString(bytes)) {
     return false;
   }
+
+  const std::string port = server_info.address();
+  const std::string ipv4_prefix = "127.0.0.1:";
+  const std::string ipv6_prefix_1 = "[0:0:0:0:0:0:0:1]:";
+  const std::string ipv6_prefix_2 = "[::1]:";
 
   // Make sure that we are being directed to localhost
   if (port.compare(0, ipv4_prefix.size(), ipv4_prefix) &&
@@ -1730,17 +1735,10 @@ bool BlazeServer::Connect() {
     return false;
   }
 
-  if (!blaze_util::ReadFile(server_dir.GetRelative("request_cookie"),
-                            &request_cookie_)) {
-    return false;
-  }
+  request_cookie_ = server_info.request_cookie();
+  response_cookie_ = server_info.response_cookie();
 
-  if (!blaze_util::ReadFile(server_dir.GetRelative("response_cookie"),
-                            &response_cookie_)) {
-    return false;
-  }
-
-  pid_t server_pid = GetServerPid(blaze_util::Path(server_dir));
+  const pid_t server_pid = server_info.pid();
   if (server_pid < 0) {
     return false;
   }

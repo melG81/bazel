@@ -721,7 +721,6 @@ public final class CcLinkingHelper {
       try {
         dynamicLinkActionBuilder.setRuntimeInputs(
             ArtifactCategory.DYNAMIC_LIBRARY,
-            ccToolchain.getDynamicRuntimeLinkMiddleman(ruleErrorConsumer, featureConfiguration),
             ccToolchain.getDynamicRuntimeLinkInputs(featureConfiguration));
       } catch (EvalException e) {
         throw ruleErrorConsumer.throwWithRuleError(e);
@@ -730,7 +729,6 @@ public final class CcLinkingHelper {
       try {
         dynamicLinkActionBuilder.setRuntimeInputs(
             ArtifactCategory.STATIC_LIBRARY,
-            ccToolchain.getStaticRuntimeLinkMiddleman(ruleErrorConsumer, featureConfiguration),
             ccToolchain.getStaticRuntimeLinkInputs(featureConfiguration));
       } catch (EvalException e) {
         throw ruleErrorConsumer.throwWithRuleError(e);
@@ -749,7 +747,8 @@ public final class CcLinkingHelper {
           convertLibraryToLinkListToLinkerInputList(
               ccLinkingContext.getLibraries(),
               linkingMode != LinkingMode.DYNAMIC,
-              dynamicLinkType.isDynamicLibrary());
+              dynamicLinkType.isDynamicLibrary(),
+              featureConfiguration);
       dynamicLinkActionBuilder.addLinkParams(
           libraries,
           ccLinkingContext.getFlattenedUserLinkFlags(),
@@ -918,7 +917,7 @@ public final class CcLinkingHelper {
       Preconditions.checkState(linkedName.startsWith("lib"));
       linkedName = linkedName.substring(3);
       artifactRoot =
-          ((RuleContext) actionConstructionContext).getRule().hasBinaryOutput()
+          ((RuleContext) actionConstructionContext).getRule().outputsToBindir()
               ? configuration.getBinDirectory(label.getRepository())
               : configuration.getGenfilesDirectory(label.getRepository());
     }
@@ -936,7 +935,10 @@ public final class CcLinkingHelper {
   }
 
   private static List<LinkerInputs.LibraryToLink> convertLibraryToLinkListToLinkerInputList(
-      NestedSet<LibraryToLink> librariesToLink, boolean staticMode, boolean forDynamicLibrary) {
+      NestedSet<LibraryToLink> librariesToLink,
+      boolean staticMode,
+      boolean forDynamicLibrary,
+      FeatureConfiguration featureConfiguration) {
     ImmutableList.Builder<LinkerInputs.LibraryToLink> librariesToLinkBuilder =
         ImmutableList.builder();
     for (LibraryToLink libraryToLink : librariesToLink.toList()) {
@@ -974,7 +976,8 @@ public final class CcLinkingHelper {
         } else if (libraryToLink.getDynamicLibrary() != null) {
           libraryToLinkToUse = libraryToLink.getDynamicLibraryToLink();
         }
-        if (libraryToLinkToUse == null) {
+        if (libraryToLinkToUse == null
+            || !featureConfiguration.isEnabled(CppRuleClasses.SUPPORTS_DYNAMIC_LINKER)) {
           if (forDynamicLibrary) {
             if (picStaticLibraryToLink != null) {
               libraryToLinkToUse = picStaticLibraryToLink;

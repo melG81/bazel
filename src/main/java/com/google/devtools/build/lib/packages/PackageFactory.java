@@ -21,6 +21,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.common.flogger.GoogleLogger;
+import com.google.devtools.build.lib.actions.ThreadStateReceiver;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
@@ -49,6 +50,7 @@ import com.google.devtools.build.lib.vfs.UnixGlob;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicReference;
@@ -110,7 +112,6 @@ public final class PackageFactory {
   }
 
   private final RuleFactory ruleFactory;
-  private final ImmutableMap<String, BuiltinRuleFunction> ruleFunctions;
   private final RuleClassProvider ruleClassProvider;
 
   private AtomicReference<? extends UnixGlob.FilesystemCalls> syscalls;
@@ -124,6 +125,7 @@ public final class PackageFactory {
 
   private final PackageSettings packageSettings;
   private final PackageValidator packageValidator;
+  private final PackageOverheadEstimator packageOverheadEstimator;
   private final PackageLoadingListener packageLoadingListener;
 
   private final BazelStarlarkEnvironment bazelStarlarkEnvironment;
@@ -131,9 +133,12 @@ public final class PackageFactory {
   /** Builder for {@link PackageFactory} instances. Intended to only be used by unit tests. */
   @VisibleForTesting
   public abstract static class BuilderForTesting {
-    protected final String version = "test";
+    protected static final String VERSION = "test";
     protected Iterable<EnvironmentExtension> environmentExtensions = ImmutableList.of();
     protected PackageValidator packageValidator = PackageValidator.NOOP_VALIDATOR;
+    protected PackageOverheadEstimator packageOverheadEstimator =
+        PackageOverheadEstimator.NOOP_ESTIMATOR;
+
     protected boolean doChecksForTesting = true;
 
     public BuilderForTesting setEnvironmentExtensions(
@@ -149,6 +154,12 @@ public final class PackageFactory {
 
     public BuilderForTesting setPackageValidator(PackageValidator packageValidator) {
       this.packageValidator = packageValidator;
+      return this;
+    }
+
+    public BuilderForTesting setPackageOverheadEstimator(
+        PackageOverheadEstimator packageOverheadEstimator) {
+      this.packageOverheadEstimator = packageOverheadEstimator;
       return this;
     }
 
@@ -179,20 +190,21 @@ public final class PackageFactory {
       String version,
       PackageSettings packageSettings,
       PackageValidator packageValidator,
+      PackageOverheadEstimator packageOverheadEstimator,
       PackageLoadingListener packageLoadingListener) {
     this.ruleFactory = new RuleFactory(ruleClassProvider);
-    this.ruleFunctions = buildRuleFunctions(ruleFactory);
     this.ruleClassProvider = ruleClassProvider;
     this.executor = executorForGlobbing;
     this.environmentExtensions = ImmutableList.copyOf(environmentExtensions);
     this.packageArguments = createPackageArguments(this.environmentExtensions);
     this.packageSettings = packageSettings;
     this.packageValidator = packageValidator;
+    this.packageOverheadEstimator = packageOverheadEstimator;
     this.packageLoadingListener = packageLoadingListener;
     this.bazelStarlarkEnvironment =
         new BazelStarlarkEnvironment(
             ruleClassProvider,
-            ruleFunctions,
+            buildRuleFunctions(ruleFactory),
             this.environmentExtensions,
             newPackageFunction(packageArguments),
             version);
@@ -429,7 +441,7 @@ public final class PackageFactory {
     }
   }
 
-  @VisibleForTesting // exposed to WorkspaceFileFunction
+  @VisibleForTesting // exposed to WorkspaceFileFunction and BzlmodRepoRuleFunction
   public Package.Builder newExternalPackageBuilder(
       RootedPath workspacePath, String workspaceName, StarlarkSemantics starlarkSemantics) {
     return Package.newExternalPackageBuilder(
@@ -453,14 +465,15 @@ public final class PackageFactory {
         repositoryMapping);
   }
 
-  /** Returns a new {@link LegacyGlobber}. */
+  /** Returns a new {@link NonSkyframeGlobber}. */
   // Exposed to skyframe.PackageFunction.
-  public LegacyGlobber createLegacyGlobber(
+  public NonSkyframeGlobber createNonSkyframeGlobber(
       Path packageDirectory,
       PackageIdentifier packageId,
       ImmutableSet<PathFragment> ignoredGlobPrefixes,
-      CachingPackageLocator locator) {
-    return new LegacyGlobber(
+      CachingPackageLocator locator,
+      ThreadStateReceiver threadStateReceiverForMetrics) {
+    return new NonSkyframeGlobber(
         new GlobCache(
             packageDirectory,
             packageId,
@@ -468,7 +481,8 @@ public final class PackageFactory {
             locator,
             syscalls,
             executor,
-            maxDirectoriesToEagerlyVisitInGlobbing));
+            maxDirectoriesToEagerlyVisitInGlobbing,
+            threadStateReceiverForMetrics));
   }
 
   /**
@@ -522,7 +536,9 @@ public final class PackageFactory {
       long loadTimeNanos,
       ExtendedEventHandler eventHandler)
       throws InvalidPackageException {
-    packageValidator.validate(pkg, eventHandler);
+    OptionalLong packageOverhead = packageOverheadEstimator.estimatePackageOverhead(pkg);
+
+    packageValidator.validate(pkg, packageOverhead, eventHandler);
 
     // Enforce limit on number of compute steps in BUILD file (b/151622307).
     long maxSteps = starlarkSemantics.get(BuildLanguageOptions.MAX_COMPUTATION_STEPS);
@@ -545,7 +561,8 @@ public final class PackageFactory {
                   .build()));
     }
 
-    packageLoadingListener.onLoadingCompleteAndSuccessful(pkg, starlarkSemantics, loadTimeNanos);
+    packageLoadingListener.onLoadingCompleteAndSuccessful(
+        pkg, starlarkSemantics, loadTimeNanos, packageOverhead);
   }
 
   /**
@@ -586,8 +603,9 @@ public final class PackageFactory {
         globber.runAsync(globs, ImmutableList.of(), /*excludeDirs=*/ true, allowEmpty);
         globber.runAsync(globsWithDirs, ImmutableList.of(), /*excludeDirs=*/ false, allowEmpty);
       } catch (BadGlobException ex) {
-        // Ignore exceptions.
-        // Errors will be properly reported when the actual globbing is done.
+        logger.atWarning().withCause(ex).log(
+            "Suppressing exception for globs=%s, globsWithDirs=%s", globs, globsWithDirs);
+        // Ignore exceptions. Errors will be properly reported when the actual globbing is done.
       }
     }
 

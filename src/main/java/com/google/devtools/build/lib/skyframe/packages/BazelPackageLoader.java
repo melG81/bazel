@@ -87,7 +87,6 @@ public class BazelPackageLoader extends AbstractPackageLoader {
           installBase,
           outputBase,
           BUILD_FILES_BY_PRIORITY,
-          EXTERNAL_PACKAGE_HELPER,
           ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS);
       this.isFetch = isFetch;
     }
@@ -133,7 +132,8 @@ public class BazelPackageLoader extends AbstractPackageLoader {
               RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE, Optional.empty()),
           PrecomputedValue.injected(
               RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING,
-              RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY));
+              RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY),
+          PrecomputedValue.injected(RepositoryDelegatorFunction.ENABLE_BZLMOD, false));
 
       return new BazelPackageLoader(this);
     }

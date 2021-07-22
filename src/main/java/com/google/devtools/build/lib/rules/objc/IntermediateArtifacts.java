@@ -26,11 +26,13 @@ import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap.UmbrellaHeaderStrategy;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import net.starlark.java.annot.StarlarkMethod;
+import net.starlark.java.eval.StarlarkValue;
 
 /** Factory class for generating artifacts which are used as intermediate output. */
 // TODO(bazel-team): This should really be named DerivedArtifacts as it contains methods for
 // final as well as intermediate artifacts.
-public final class IntermediateArtifacts {
+public final class IntermediateArtifacts implements StarlarkValue {
   static final String LINKMAP_SUFFIX = ".linkmap";
 
   private final RuleContext ruleContext;
@@ -97,6 +99,7 @@ public final class IntermediateArtifacts {
   }
 
   /** Returns the archive file name suffix. */
+  @StarlarkMethod(name = "archive_file_name_suffix", documented = false, structField = true)
   public String archiveFileNameSuffix() {
     return archiveFileNameSuffix;
   }
@@ -132,6 +135,7 @@ public final class IntermediateArtifacts {
    * The .objlist file, which contains a list of paths of object files to archive and is read by
    * libtool (via -filelist flag) in the archive action.
    */
+  @StarlarkMethod(name = "archive_obj_list", documented = false, structField = true)
   public Artifact archiveObjList() {
     return appendExtension("-archive.objlist");
   }
@@ -254,8 +258,7 @@ public final class IntermediateArtifacts {
     return architectureRepresentation(arch, LINKMAP_SUFFIX);
   }
 
-  /** {@link CppModuleMap} that provides the clang module map for this target. */
-  public CppModuleMap moduleMap() {
+  private String getModuleName() {
     String moduleName;
     if (ruleContext.attributes().isAttributeValueExplicitlySpecified("module_name")) {
       moduleName = ruleContext.attributes().get("module_name", Type.STRING);
@@ -270,6 +273,13 @@ public final class IntermediateArtifacts {
               .replace("/", "_")
               .replace(":", "_");
     }
+    return moduleName;
+  }
+
+  /** {@link CppModuleMap} for swift. */
+  @StarlarkMethod(name = "swift_module_map", documented = false, structField = true)
+  public CppModuleMap swiftModuleMap() {
+    String moduleName = getModuleName();
     Optional<Artifact> customModuleMap = CompilationSupport.getCustomModuleMap(ruleContext);
     if (customModuleMap.isPresent()) {
       return new CppModuleMap(customModuleMap.get(), moduleName);
@@ -284,6 +294,12 @@ public final class IntermediateArtifacts {
       return new CppModuleMap(
           appendExtensionInGenfiles(".modulemaps/module.modulemap"), moduleName);
     }
+  }
+
+  /** {@link CppModuleMap} for layering check and modules. */
+  @StarlarkMethod(name = "internal_module_map", documented = false, structField = true)
+  public CppModuleMap internalModuleMap() {
+    return new CppModuleMap(appendExtensionInGenfiles(".internal.cppmap"), getModuleName());
   }
 
   /**

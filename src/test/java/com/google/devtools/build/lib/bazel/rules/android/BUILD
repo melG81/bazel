@@ -69,28 +69,11 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/rules/android",
         "//src/main/java/com/google/devtools/build/lib/skyframe:configured_target_and_data",
         "//src/main/java/com/google/devtools/build/lib/vfs",
-        "//src/test/java/com/google/devtools/build/lib/analysis/util",
         "//src/test/java/com/google/devtools/build/lib/packages:testutil",
         "//src/test/java/com/google/devtools/build/lib/rules/android:AndroidBuildViewTestCase",
         "//src/test/java/com/google/devtools/build/lib/rules/android:AndroidLocalTestTest",
         "//third_party:guava",
         "//third_party:junit4",
         "//third_party:truth",
-    ],
-)
-
-test_suite(
-    name = "windows_tests",
-    tags = [
-        "-no_windows",
-        "-slow",
-    ],
-)
-
-test_suite(
-    name = "all_windows_tests",
-    tests = [
-        ":windows_tests",
-        "//src/test/java/com/google/devtools/build/lib/bazel/rules/android/ndkcrosstools:all_windows_tests",
     ],
 )

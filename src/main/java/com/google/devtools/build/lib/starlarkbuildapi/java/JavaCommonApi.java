@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.starlarkbuildapi.FileApi;
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkActionFactoryApi;
 import com.google.devtools.build.lib.starlarkbuildapi.StarlarkRuleContextApi;
 import com.google.devtools.build.lib.starlarkbuildapi.core.ProviderApi;
+import com.google.devtools.build.lib.starlarkbuildapi.cpp.CcInfoApi;
 import com.google.devtools.build.lib.starlarkbuildapi.platform.ConstraintValueInfoApi;
 import javax.annotation.Nullable;
 import net.starlark.java.annot.Param;
@@ -38,10 +39,10 @@ import net.starlark.java.eval.StarlarkValue;
 @StarlarkBuiltin(name = "java_common", doc = "Utilities for Java compilation support in Starlark.")
 public interface JavaCommonApi<
         FileT extends FileApi,
-        JavaInfoT extends JavaInfoApi<FileT>,
+        JavaInfoT extends JavaInfoApi<FileT, ?, ?>,
         JavaToolchainT extends JavaToolchainStarlarkApiProviderApi,
         ConstraintValueT extends ConstraintValueInfoApi,
-        starlarkRuleContextT extends StarlarkRuleContextApi<ConstraintValueT>,
+        StarlarkRuleContextT extends StarlarkRuleContextApi<ConstraintValueT>,
         StarlarkActionFactoryT extends StarlarkActionFactoryApi>
     extends StarlarkValue {
 
@@ -106,37 +107,48 @@ public interface JavaCommonApi<
             defaultValue = "[]",
             doc = "A list of dependencies. Optional."),
         @Param(
-            name = "experimental_local_compile_time_deps",
+            name = "runtime_deps",
             positional = false,
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
             defaultValue = "[]",
-            doc =
-                "Compile-time dependencies of the compilation that should be omitted from the"
-                    + " returned JavaInfo.",
-            enableOnlyWithFlag = BuildLanguageOptions.EXPERIMENTAL_GOOGLE_LEGACY_API,
-            valueWhenDisabled = "[]"),
+            doc = "A list of runtime dependencies. Optional."),
         @Param(
             name = "exports",
             positional = false,
             named = true,
-            allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
+            allowedTypes = {
+              @ParamType(type = Sequence.class, generic1 = JavaInfoApi.class),
+            },
             defaultValue = "[]",
             doc = "A list of exports. Optional."),
         @Param(
             name = "plugins",
             positional = false,
             named = true,
-            allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
+            allowedTypes = {
+              @ParamType(type = Sequence.class, generic1 = JavaPluginInfoApi.class),
+              @ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)
+            },
             defaultValue = "[]",
             doc = "A list of plugins. Optional."),
         @Param(
             name = "exported_plugins",
             positional = false,
             named = true,
-            allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
+            allowedTypes = {
+              @ParamType(type = Sequence.class, generic1 = JavaPluginInfoApi.class),
+              @ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)
+            },
             defaultValue = "[]",
             doc = "A list of exported plugins. Optional."),
+        @Param(
+            name = "native_libraries",
+            positional = false,
+            allowedTypes = {@ParamType(type = Sequence.class, generic1 = CcInfoApi.class)},
+            named = true,
+            defaultValue = "[]",
+            doc = "CC native library dependencies that are needed for this library."),
         @Param(
             name = "annotation_processor_additional_inputs",
             positional = false,
@@ -163,7 +175,7 @@ public interface JavaCommonApi<
             doc =
                 "A string that specifies how to handle strict deps. Possible values: 'OFF', "
                     + "'ERROR', 'WARN' and 'DEFAULT'. For more details see "
-                    + "https://docs.bazel.build/versions/master/bazel-user-manual.html#"
+                    + "https://docs.bazel.build/versions/main/bazel-user-manual.html#"
                     + "flag--strict_java_deps. By default 'ERROR'."),
         @Param(
             name = "java_toolchain",
@@ -192,21 +204,31 @@ public interface JavaCommonApi<
             named = true,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = FileApi.class)},
             defaultValue = "[]"),
-        @Param(name = "neverlink", positional = false, named = true, defaultValue = "False")
+        @Param(name = "neverlink", positional = false, named = true, defaultValue = "False"),
+        @Param(
+            name = "enable_annotation_processing",
+            positional = false,
+            named = true,
+            defaultValue = "True",
+            doc =
+                "Disables annotation processing in this compilation, causing any annotation"
+                    + " processors provided in plugins or in exported_plugins of deps to be"
+                    + " ignored.")
       },
       useStarlarkThread = true)
   JavaInfoT createJavaCompileAction(
-      starlarkRuleContextT starlarkRuleContext,
+      StarlarkRuleContextT starlarkRuleContext,
       Sequence<?> sourceJars, // <FileT> expected.
       Sequence<?> sourceFiles, // <FileT> expected.
       FileT outputJar,
       Object outputSourceJar,
       Sequence<?> javacOpts, // <String> expected.
       Sequence<?> deps, // <JavaInfoT> expected.
-      Sequence<?> experimentalLocalCompileTimeDeps, // <JavaInfoT> expected.
+      Sequence<?> runtimeDeps, // <JavaInfoT> expected.
       Sequence<?> exports, // <JavaInfoT> expected.
       Sequence<?> plugins, // <JavaInfoT> expected.
       Sequence<?> exportedPlugins, // <JavaInfoT> expected.
+      Sequence<?> nativeLibraries, // <CcInfoT> expected.
       Sequence<?> annotationProcessorAdditionalInputs, // <FileT> expected.
       Sequence<?> annotationProcessorAdditionalOutputs, // <FileT> expected.
       String strictDepsMode,
@@ -215,6 +237,7 @@ public interface JavaCommonApi<
       Sequence<?> sourcepathEntries, // <FileT> expected.
       Sequence<?> resources, // <FileT> expected.
       Boolean neverlink,
+      Boolean enableAnnotationProcessing,
       StarlarkThread thread)
       throws EvalException, InterruptedException;
 
@@ -395,8 +418,10 @@ public interface JavaCommonApi<
             named = false,
             allowedTypes = {@ParamType(type = Sequence.class, generic1 = JavaInfoApi.class)},
             doc = "The list of providers to merge."),
-      })
-  JavaInfoT mergeJavaProviders(Sequence<?> providers /* <JavaInfoT> expected. */)
+      },
+      useStarlarkThread = true)
+  JavaInfoT mergeJavaProviders(
+      Sequence<?> providers /* <JavaInfoT> expected. */, StarlarkThread thread)
       throws EvalException;
 
   @StarlarkMethod(
@@ -432,7 +457,7 @@ public interface JavaCommonApi<
         @Param(name = "ctx", positional = false, named = true, doc = "The rule context."),
       },
       doc = "Returns true if --incompatible_use_toolchain_resolution_for_java_rules is enabled.")
-  boolean isJavaToolchainResolutionEnabled(starlarkRuleContextT ruleContext) throws EvalException;
+  boolean isJavaToolchainResolutionEnabled(StarlarkRuleContextT ruleContext) throws EvalException;
 
   @StarlarkMethod(
       name = "MessageBundleInfo",
@@ -475,6 +500,7 @@ public interface JavaCommonApi<
       enableOnlyWithFlag = BuildLanguageOptions.EXPERIMENTAL_GOOGLE_LEGACY_API)
   Sequence<String> getConstraints(JavaInfoT javaInfo);
 
+  // TODO(b/111090089): delete once java_common.compile(enable_annotation_processing) is available
   @StarlarkMethod(
       name = "experimental_disable_annotation_processing",
       doc =
@@ -553,41 +579,6 @@ public interface JavaCommonApi<
       Object processorClasspath,
       Object classJar,
       Object sourceJar)
-      throws EvalException;
-
-  @StarlarkMethod(
-      name = "compile_time_jdeps",
-      doc = "Returns a depset of the given JavaInfo's compile-time jdeps files.",
-      parameters = {
-        @Param(
-            name = "java_info",
-            positional = true,
-            named = false,
-            doc = "The JavaInfo to query."),
-      },
-      enableOnlyWithFlag = BuildLanguageOptions.EXPERIMENTAL_GOOGLE_LEGACY_API)
-  Depset /*<FileT>*/ getCompileTimeJavaDependencyArtifacts(JavaInfoT javaInfo);
-
-  @StarlarkMethod(
-      name = "add_compile_time_jdeps",
-      doc = "Returns a copy of the given JavaInfo with the given compile-time jdeps files added.",
-      parameters = {
-        @Param(
-            name = "java_info",
-            positional = true,
-            named = false,
-            doc = "The JavaInfo to clone."),
-        @Param(
-            name = "compile_time_jdeps",
-            allowedTypes = {@ParamType(type = Sequence.class, generic1 = FileApi.class)},
-            named = true,
-            positional = false,
-            defaultValue = "[]",
-            doc = "Compile-time jdeps files to add.")
-      },
-      enableOnlyWithFlag = BuildLanguageOptions.EXPERIMENTAL_GOOGLE_LEGACY_API)
-  JavaInfoT addCompileTimeJavaDependencyArtifacts(
-      JavaInfoT javaInfo, Sequence<?> compileTimeJavaDependencyArtifacts /* <FileT> expected. */)
       throws EvalException;
 
   @StarlarkMethod(

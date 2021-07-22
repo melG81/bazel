@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.cpp;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -25,6 +26,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -83,13 +85,16 @@ import com.google.devtools.build.lib.starlarkbuildapi.CommandLineArgsApi;
 import com.google.devtools.build.lib.util.DependencySet;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Fingerprint;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.ShellEscaper;
 import com.google.devtools.build.lib.util.io.FileOutErr;
+import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.IORuntimeException;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
@@ -101,7 +106,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -122,8 +126,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
 
   private static final boolean VALIDATION_DEBUG_WARN = false;
 
-  private static final String CPP_COMPILE_MNEMONIC = "CppCompile";
-  private static final String OBJC_COMPILE_MNEMONIC = "ObjcCompile";
+  @VisibleForTesting public static final String CPP_COMPILE_MNEMONIC = "CppCompile";
+  @VisibleForTesting public static final String OBJC_COMPILE_MNEMONIC = "ObjcCompile";
 
   protected final Artifact outputFile;
   private final Artifact sourceFile;
@@ -157,7 +161,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
    * The fingerprint of {@link #compileCommandLine}. This is computed lazily so that the command
    * line is not unnecessarily flattened outside of action execution.
    */
-  byte[] commandLineKey;
+  private byte[] commandLineKey;
 
   private final ImmutableMap<String, String> executionInfo;
   private final String actionName;
@@ -384,9 +388,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
 
   @Override
   public boolean discoversInputs() {
-    return shouldScanIncludes
-        || getDotdFile() != null
-        || featureConfiguration.isEnabled(CppRuleClasses.PARSE_SHOWINCLUDES);
+    return shouldScanIncludes || getDotdFile() != null || shouldParseShowIncludes();
   }
 
   @Override
@@ -585,6 +587,13 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     return additionalInputs;
   }
 
+  @Override
+  protected final NestedSet<Artifact> getOriginalInputs() {
+    return NestedSetBuilder.fromNestedSet(mandatoryInputs)
+        .addTransitive(inputsForInvalidation)
+        .build();
+  }
+
   private Predicate<Artifact> getValidUndeclaredHeaderPredicate(
       ActionExecutionContext actionExecutionContext) {
     if (getDotdFile() != null) {
@@ -779,7 +788,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     return result.build();
   }
 
-  private List<String> getCmdlineIncludes(List<String> args) {
+  private static ImmutableList<String> getCmdlineIncludes(List<String> args) {
     ImmutableList.Builder<String> cmdlineIncludes = ImmutableList.builder();
     for (Iterator<String> argi = args.iterator(); argi.hasNext(); ) {
       String arg = argi.next();
@@ -836,7 +845,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   public ImmutableMap<String, String> getIncompleteEnvironmentForTesting()
       throws ActionExecutionException {
     try {
-      return getEnvironment(ImmutableMap.of());
+      return getEffectiveEnvironment(ImmutableMap.of());
     } catch (CommandLineExpansionException e) {
       String message =
           String.format(
@@ -847,9 +856,10 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
   }
 
-  public ImmutableMap<String, String> getEnvironment(Map<String, String> clientEnv)
+  @Override()
+  public ImmutableMap<String, String> getEffectiveEnvironment(Map<String, String> clientEnv)
       throws CommandLineExpansionException {
-    Map<String, String> environment = new LinkedHashMap<>(env.size());
+    Map<String, String> environment = Maps.newLinkedHashMapWithExpectedSize(env.size());
     env.resolve(environment, clientEnv);
 
     if (!getExecutionInfo().containsKey(ExecutionRequirements.REQUIRES_DARWIN)) {
@@ -870,9 +880,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   @Override
   public Sequence<CommandLineArgsApi> getStarlarkArgs() throws EvalException {
     ImmutableSet<Artifact> directoryInputs =
-        getInputs().toList().stream()
-            .filter(artifact -> artifact.isDirectory())
-            .collect(ImmutableSet.toImmutableSet());
+        getInputs().toList().stream().filter(Artifact::isDirectory).collect(toImmutableSet());
 
     CommandLine commandLine = compileCommandLine.getFilteredFeatureConfigurationCommandLine(this);
     ParamFileInfo paramFileInfo = null;
@@ -917,7 +925,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
     // TODO(ulfjack): Extra actions currently ignore the client environment.
     for (Map.Entry<String, String> envVariable :
-        getEnvironment(/* clientEnv= */ ImmutableMap.of()).entrySet()) {
+        getEffectiveEnvironment(/*clientEnv=*/ ImmutableMap.of()).entrySet()) {
       info.addVariable(
           EnvironmentVariable.newBuilder()
               .setName(envVariable.getKey())
@@ -936,7 +944,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   /** Returns the compiler options. */
   @VisibleForTesting
   public List<String> getCompilerOptions() throws CommandLineExpansionException {
-    return compileCommandLine.getCompilerOptions(/* overwrittenVariables= */ null);
+    return compileCommandLine.getCompilerOptions(/*overwrittenVariables=*/ null);
   }
 
   @Override
@@ -1043,7 +1051,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     errors.assertProblemFree(this, getSourceFile());
   }
 
-  Iterable<PathFragment> getValidationIgnoredDirs() {
+  private Iterable<PathFragment> getValidationIgnoredDirs() {
     List<PathFragment> cxxSystemIncludeDirs = getBuiltInIncludeDirectories();
     return Iterables.concat(cxxSystemIncludeDirs, ccCompilationContext.getSystemIncludeDirs());
   }
@@ -1146,7 +1154,21 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
       }
       if (declaredIncludeDirs.contains(root.relativize(dir))) {
         for (Path dirOrPackage : packagesToCheckForBuildFiles) {
-          if (dirOrPackage.getRelative(BUILD_PATH_FRAGMENT).exists()) {
+          FileStatus fileStatus = null;
+          try {
+            // This file system access shouldn't exist at all and has to go away when this is
+            // rewritten in Starlark.
+            // TODO(b/187366935): Consider globbing everything eagerly instead.
+            fileStatus =
+                actionExecutionContext
+                    .getSyscalls()
+                    .statIfFound(dirOrPackage.getRelative(BUILD_PATH_FRAGMENT), Symlinks.FOLLOW);
+          } catch (IOException e) {
+            // Previously, we used Path.exists() to check whether the BUILD file exists. This did
+            // return false on any error. So by ignoring the exception are maintaining current
+            // behaviour.
+          }
+          if (fileStatus != null && fileStatus.isFile()) {
             return false; // Bad: this is a sub-package, not a subdir of a declared package.
           }
         }
@@ -1272,9 +1294,38 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     return ccCompilationContext.getDeclaredIncludeSrcs();
   }
 
-  /** Estimates resource consumption when this action is executed locally. */
-  public ResourceSet estimateResourceConsumptionLocal() {
-    return AbstractAction.DEFAULT_RESOURCE_SET;
+  /**
+   * Estimates resource consumption when this action is executed locally. During investigation we
+   * found linear dependency between used memory by action and number of inputs. For memory
+   * estimation we are using form C + K * inputs, where C and K selected in such way, that more than
+   * 95% of actions used less than C + K * inputs MB of memory during execution.
+   */
+  public static ResourceSet estimateResourceConsumptionLocal(String mnemonic, OS os, int inputs) {
+    if (mnemonic == null) {
+      return AbstractAction.DEFAULT_RESOURCE_SET;
+    }
+
+    switch (mnemonic) {
+      case CPP_COMPILE_MNEMONIC:
+        switch (os) {
+          case DARWIN:
+          case LINUX:
+            return ResourceSet.createWithRamCpu(
+                /* memoryMb= */ 80 + 0.7 * inputs, /* cpuUsage= */ 1);
+          default:
+            return AbstractAction.DEFAULT_RESOURCE_SET;
+        }
+      case OBJC_COMPILE_MNEMONIC:
+        switch (os) {
+          case DARWIN:
+            return ResourceSet.createWithRamCpu(
+                /* memoryMb= */ 80 + 0.2 * inputs, /* cpuUsage= */ 1);
+          default:
+            return AbstractAction.DEFAULT_RESOURCE_SET;
+        }
+      default:
+        return AbstractAction.DEFAULT_RESOURCE_SET;
+    }
   }
 
   @Override
@@ -1399,7 +1450,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     ActionExecutionContext spawnContext;
     ShowIncludesFilter showIncludesFilterForStdout;
     ShowIncludesFilter showIncludesFilterForStderr;
-    if (featureConfiguration.isEnabled(CppRuleClasses.PARSE_SHOWINCLUDES)) {
+    if (shouldParseShowIncludes()) {
       showIncludesFilterForStdout = new ShowIncludesFilter(getSourceFile().getFilename());
       showIncludesFilterForStderr = new ShowIncludesFilter(getSourceFile().getFilename());
       FileOutErr originalOutErr = actionExecutionContext.getFileOutErr();
@@ -1413,7 +1464,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
 
     Spawn spawn;
     try {
-      spawn = createSpawn(actionExecutionContext.getClientEnv());
+      spawn =
+          createSpawn(actionExecutionContext.getExecRoot(), actionExecutionContext.getClientEnv());
     } finally {
       clearAdditionalInputs();
     }
@@ -1445,7 +1497,12 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     return null;
   }
 
-  protected Spawn createSpawn(Map<String, String> clientEnv) throws ActionExecutionException {
+  protected boolean shouldParseShowIncludes() {
+    return featureConfiguration.isEnabled(CppRuleClasses.PARSE_SHOWINCLUDES);
+  }
+
+  protected Spawn createSpawn(Path execRoot, Map<String, String> clientEnv)
+      throws ActionExecutionException {
     // Intentionally not adding {@link CppCompileAction#inputsForInvalidation}, those are not needed
     // for execution.
     NestedSetBuilder<ActionInput> inputsBuilder =
@@ -1458,7 +1515,8 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
     NestedSet<ActionInput> inputs = inputsBuilder.build();
 
-    ImmutableMap<String, String> executionInfo = getExecutionInfo();
+    ImmutableMap.Builder<String, String> executionInfo =
+        ImmutableMap.<String, String>builder().putAll(getExecutionInfo());
     if (getDotdFile() != null && useInMemoryDotdFiles()) {
       /*
        * CppCompileAction does dotd file scanning locally inside the Bazel process and thus
@@ -1468,24 +1526,30 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
        * in-memory. We can do that via
        * {@link ExecutionRequirements.REMOTE_EXECUTION_INLINE_OUTPUTS}.
        */
-      executionInfo =
-          ImmutableMap.<String, String>builderWithExpectedSize(executionInfo.size() + 1)
-              .putAll(executionInfo)
-              .put(
-                  ExecutionRequirements.REMOTE_EXECUTION_INLINE_OUTPUTS,
-                  getDotdFile().getExecPathString())
-              .build();
+      executionInfo.put(
+          ExecutionRequirements.REMOTE_EXECUTION_INLINE_OUTPUTS, getDotdFile().getExecPathString());
+    }
+
+    if (shouldParseShowIncludes()) {
+      // Hack on Windows. The included headers dumped by cl.exe in stdout contain absolute paths.
+      // When compiling the file from different workspace, the shared cache will cause header
+      // dependency checking to fail. This was initially fixed by a hack (see
+      // https://github.com/bazelbuild/bazel/issues/9172 for more details), but is broken again due
+      // to cl/356735700. We require execution service to ignore caches from other workspace.
+      executionInfo.put(
+          ExecutionRequirements.DIFFERENTIATE_WORKSPACE_CACHE, execRoot.getBaseName());
     }
 
     try {
       return new SimpleSpawn(
           this,
           ImmutableList.copyOf(getArguments()),
-          getEnvironment(clientEnv),
-          executionInfo,
+          getEffectiveEnvironment(clientEnv),
+          executionInfo.build(),
           inputs,
           getOutputs(),
-          estimateResourceConsumptionLocal());
+          estimateResourceConsumptionLocal(
+              getMnemonic(), OS.getCurrent(), inputs.memoizedFlattenAndGetSize()));
     } catch (CommandLineExpansionException e) {
       String message =
           String.format(
@@ -1496,32 +1560,28 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     }
   }
 
-  @VisibleForTesting
-  public NestedSet<Artifact> discoverInputsFromShowIncludesFilters(
+  private NestedSet<Artifact> discoverInputsFromShowIncludesFilters(
       Path execRoot,
       ArtifactResolver artifactResolver,
       ShowIncludesFilter showIncludesFilterForStdout,
       ShowIncludesFilter showIncludesFilterForStderr,
       boolean siblingRepositoryLayout)
       throws ActionExecutionException {
-    ImmutableList.Builder<Path> dependencies = new ImmutableList.Builder<>();
-    dependencies.addAll(showIncludesFilterForStdout.getDependencies(execRoot));
-    dependencies.addAll(showIncludesFilterForStderr.getDependencies(execRoot));
-    HeaderDiscovery.Builder discoveryBuilder =
-        new HeaderDiscovery.Builder()
-            .setAction(this)
-            .setSourceFile(getSourceFile())
-            .setDependencies(dependencies.build())
-            .setPermittedSystemIncludePrefixes(getPermittedSystemIncludePrefixes(execRoot))
-            .setAllowedDerivedInputs(getAllowedDerivedInputs());
-
-    if (needsIncludeValidation) {
-      discoveryBuilder.shouldValidateInclusions();
-    }
-
-    return discoveryBuilder
-        .build()
-        .discoverInputsFromDependencies(execRoot, artifactResolver, siblingRepositoryLayout);
+    Collection<Path> stdoutDeps = showIncludesFilterForStdout.getDependencies(execRoot);
+    Collection<Path> stderrDeps = showIncludesFilterForStderr.getDependencies(execRoot);
+    return HeaderDiscovery.discoverInputsFromDependencies(
+        this,
+        getSourceFile(),
+        needsIncludeValidation,
+        ImmutableList.<Path>builderWithExpectedSize(stdoutDeps.size() + stderrDeps.size())
+            .addAll(stdoutDeps)
+            .addAll(stderrDeps)
+            .build(),
+        getPermittedSystemIncludePrefixes(execRoot),
+        getAllowedDerivedInputs(),
+        execRoot,
+        artifactResolver,
+        siblingRepositoryLayout);
   }
 
   @VisibleForTesting
@@ -1533,22 +1593,16 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
       boolean siblingRepositoryLayout)
       throws ActionExecutionException {
     Preconditions.checkNotNull(getDotdFile(), "Trying to scan .d file which is unset");
-    HeaderDiscovery.Builder discoveryBuilder =
-        new HeaderDiscovery.Builder()
-            .setAction(this)
-            .setSourceFile(getSourceFile())
-            .setDependencies(
-                processDepset(actionExecutionContext, execRoot, dotDContents).getDependencies())
-            .setPermittedSystemIncludePrefixes(getPermittedSystemIncludePrefixes(execRoot))
-            .setAllowedDerivedInputs(getAllowedDerivedInputs());
-
-    if (needsIncludeValidation) {
-      discoveryBuilder.shouldValidateInclusions();
-    }
-
-    return discoveryBuilder
-        .build()
-        .discoverInputsFromDependencies(execRoot, artifactResolver, siblingRepositoryLayout);
+    return HeaderDiscovery.discoverInputsFromDependencies(
+        this,
+        getSourceFile(),
+        needsIncludeValidation,
+        processDepset(actionExecutionContext, execRoot, dotDContents).getDependencies(),
+        getPermittedSystemIncludePrefixes(execRoot),
+        getAllowedDerivedInputs(),
+        execRoot,
+        artifactResolver,
+        siblingRepositoryLayout);
   }
 
   public DependencySet processDepset(
@@ -1750,6 +1804,11 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
   private static Map<Artifact, NestedSet<? extends Artifact>> computeTransitivelyUsedModules(
       SkyFunction.Environment env, Collection<Artifact.DerivedArtifact> usedModules)
       throws InterruptedException {
+    // Because this env.getValues call does not specify any exceptions, it is impossible for input
+    // discovery to recover from exceptions thrown by spurious module deps (for instance, if a
+    // commented-out include references a header file with an error in it). However, we generally
+    // don't try to recover from errors around spurious includes discovered in the current build.
+    // TODO(janakr): Can errors be aggregated here at least?
     Map<SkyKey, SkyValue> actionExecutionValues =
         env.getValues(
             Iterables.transform(usedModules, Artifact.DerivedArtifact::getGeneratingActionKey));
@@ -1777,7 +1836,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     private final ShowIncludesFilter showIncludesFilterForStderr;
     private final SpawnContinuation spawnContinuation;
 
-    public CppCompileActionContinuation(
+    CppCompileActionContinuation(
         ActionExecutionContext actionExecutionContext,
         ActionExecutionContext spawnExecutionContext,
         ShowIncludesFilter showIncludesFilterForStdout,
@@ -1835,7 +1894,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
               .getOptions(BuildLanguageOptions.class)
               .experimentalSiblingRepositoryLayout;
 
-      if (featureConfiguration.isEnabled(CppRuleClasses.PARSE_SHOWINCLUDES)) {
+      if (shouldParseShowIncludes()) {
         NestedSet<Artifact> discoveredInputs =
             discoverInputsFromShowIncludesFilters(
                 execRoot,
@@ -1875,7 +1934,7 @@ public class CppCompileAction extends AbstractAction implements IncludeScannable
     private void copyTempOutErrToActionOutErr() throws ActionExecutionException {
       // If parse_showincludes feature is enabled, instead of parsing dotD file we parse the
       // output of cl.exe caused by /showIncludes option.
-      if (featureConfiguration.isEnabled(CppRuleClasses.PARSE_SHOWINCLUDES)) {
+      if (shouldParseShowIncludes()) {
         try {
           FileOutErr tempOutErr = spawnExecutionContext.getFileOutErr();
           FileOutErr outErr = actionExecutionContext.getFileOutErr();

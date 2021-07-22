@@ -32,6 +32,7 @@ import com.google.devtools.build.lib.exec.ModuleActionContextRegistry;
 import com.google.devtools.build.lib.exec.SpawnStrategyRegistry;
 import com.google.devtools.build.lib.packages.Package.Builder.PackageSettings;
 import com.google.devtools.build.lib.packages.PackageLoadingListener;
+import com.google.devtools.build.lib.packages.PackageOverheadEstimator;
 import com.google.devtools.build.lib.packages.PackageValidator;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.TopDownActionCache;
@@ -93,6 +94,11 @@ public abstract class BlazeModule {
     return null;
   }
 
+  @Nullable
+  public FileSystem getFileSystemForBuildArtifacts(FileSystem fileSystem) {
+    return null;
+  }
+
   /**
    * Returns the {@link TopDownActionCache} used by Bazel. It is an error if more than one module
    * returns a top-down action cache. If all modules return null, there will be no top-down caching.
@@ -119,7 +125,7 @@ public abstract class BlazeModule {
     }
 
     public static ModuleFileSystem create(FileSystem fileSystem) {
-      return create(fileSystem, null);
+      return create(fileSystem, /*virtualExecRootBase=*/ null);
     }
   }
 
@@ -255,15 +261,6 @@ public abstract class BlazeModule {
   /** Returns extra options this module contributes to all commands. */
   public Iterable<Class<? extends OptionsBase>> getCommonCommandOptions() {
     return ImmutableList.of();
-  }
-
-  /**
-   * Returns an instance of BuildOptions to be used to create {@link
-   * BuildOptions.OptionsDiffForReconstruction} with. Only one installed Module should override
-   * this.
-   */
-  public BuildOptions getDefaultBuildOptions(BlazeRuntime runtime) {
-    return null;
   }
 
   /**
@@ -405,6 +402,19 @@ public abstract class BlazeModule {
    */
   @Nullable
   public PackageValidator getPackageValidator() {
+    return null;
+  }
+
+  /**
+   * Returns a {@link PackageOverheadEstimator} to be used to estimate the cost of loaded packages,
+   * or null if the module does not provide any such functionality.
+   *
+   * <p>Called once during server startup some time after {@link #serverInit}.
+   *
+   * <p>Note that only one instance per Bazel/Blaze runtime is allowed
+   */
+  @Nullable
+  public PackageOverheadEstimator getPackageOverheadEstimator() {
     return null;
   }
 

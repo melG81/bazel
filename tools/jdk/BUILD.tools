@@ -44,6 +44,11 @@ legacy_java_runtime_alias(name = "legacy_current_java_runtime")
 # Points to --java_toolchain/--host_java_toolchain, defaults ":toolchain"/":remote_toolchain"
 legacy_java_toolchain_alias(name = "legacy_current_java_toolchain")
 
+# Aliases value of --plugins flag as a JavaPluginInfo
+java_plugins_flag_alias(
+    name = "java_plugins_flag_alias",
+)
+
 # This is necessary to get the *host* Java runtime. Depending on
 # //tools/jdk:current_java_runtime from an attribute with the host transition
 # does not work because the dependency is determined based on the configuration
@@ -383,6 +388,15 @@ default_java_toolchain(
     target_version = "15",
 )
 
+# A toolchain that targets java 16.
+default_java_toolchain(
+    name = "toolchain_jdk_16",
+    configuration = dict(),
+    java_runtime = "@bazel_tools//tools/jdk:remotejdk_16",
+    source_version = "16",
+    target_version = "16",
+)
+
 # Deprecated, do not use.
 # It will be removed after migration to Java toolchain resolution.
 default_java_toolchain(
@@ -438,6 +452,10 @@ _JDKS = [
     "remotejdk15_macos_aarch64",
     "remotejdk15_win",
     "remotejdk15_linux",
+    "remotejdk16_macos",
+    "remotejdk16_macos_aarch64",
+    "remotejdk16_win",
+    "remotejdk16_linux",
 ]
 
 [
@@ -478,6 +496,22 @@ java_runtime_version_alias(
             "//src/conditions:darwin_arm64": ":remotejdk15_macos_aarch64",
             "//src/conditions:windows": ":remotejdk15_win",
             "//src/conditions:linux_x86_64": ":remotejdk15_linux",
+        },
+        no_match_error = "Could not find a JDK for host execution environment, please explicitly" +
+                         " provide one using `--host_javabase.`",
+    ),
+    visibility = ["//visibility:public"],
+)
+
+java_runtime_version_alias(
+    name = "remotejdk_16",
+    runtime_version = "remotejdk_16",
+    selected_java_runtime = select(
+        {
+            "//src/conditions:darwin_x86_64": ":remotejdk16_macos",
+            "//src/conditions:darwin_arm64": ":remotejdk16_macos_aarch64",
+            "//src/conditions:windows": ":remotejdk16_win",
+            "//src/conditions:linux_x86_64": ":remotejdk16_linux",
         },
         no_match_error = "Could not find a JDK for host execution environment, please explicitly" +
                          " provide one using `--host_javabase.`",

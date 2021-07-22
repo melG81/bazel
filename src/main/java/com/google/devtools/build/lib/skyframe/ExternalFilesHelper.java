@@ -16,12 +16,12 @@ package com.google.devtools.build.lib.skyframe;
 import com.google.common.base.Preconditions;
 import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider.BundledFileSystem;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadCompatible;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
-import com.google.devtools.build.lib.repository.ExternalPackageHelper;
 import com.google.devtools.build.lib.rules.repository.RepositoryFunction;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.TestType;
@@ -41,7 +41,6 @@ public class ExternalFilesHelper {
   private final BlazeDirectories directories;
   private final int maxNumExternalFilesToLog;
   private final AtomicInteger numExternalFilesLogged = new AtomicInteger(0);
-  private final ExternalPackageHelper externalPackageHelper;
 
   // These variables are set to true from multiple threads, but only read in the main thread.
   // So volatility or an AtomicBoolean is not needed.
@@ -55,36 +54,27 @@ public class ExternalFilesHelper {
       ExternalFileAction externalFileAction,
       BlazeDirectories directories,
       int maxNumExternalFilesToLog,
-      ManagedDirectoriesKnowledge managedDirectoriesKnowledge,
-      ExternalPackageHelper externalPackageHelper) {
+      ManagedDirectoriesKnowledge managedDirectoriesKnowledge) {
     this.pkgLocator = pkgLocator;
     this.externalFileAction = externalFileAction;
     this.directories = directories;
     this.maxNumExternalFilesToLog = maxNumExternalFilesToLog;
     this.managedDirectoriesKnowledge = managedDirectoriesKnowledge;
-    this.externalPackageHelper = externalPackageHelper;
   }
 
   public static ExternalFilesHelper create(
       AtomicReference<PathPackageLocator> pkgLocator,
       ExternalFileAction externalFileAction,
       BlazeDirectories directories,
-      ManagedDirectoriesKnowledge managedDirectoriesKnowledge,
-      ExternalPackageHelper externalPackageHelper) {
+      ManagedDirectoriesKnowledge managedDirectoriesKnowledge) {
     return TestType.isInTest()
-        ? createForTesting(
-            pkgLocator,
-            externalFileAction,
-            directories,
-            managedDirectoriesKnowledge,
-            externalPackageHelper)
+        ? createForTesting(pkgLocator, externalFileAction, directories, managedDirectoriesKnowledge)
         : new ExternalFilesHelper(
             pkgLocator,
             externalFileAction,
             directories,
             /*maxNumExternalFilesToLog=*/ 100,
-            managedDirectoriesKnowledge,
-            externalPackageHelper);
+            managedDirectoriesKnowledge);
   }
 
   public static ExternalFilesHelper createForTesting(
@@ -95,36 +85,21 @@ public class ExternalFilesHelper {
         pkgLocator,
         externalFileAction,
         directories,
-        BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER);
-  }
-
-  public static ExternalFilesHelper createForTesting(
-      AtomicReference<PathPackageLocator> pkgLocator,
-      ExternalFileAction externalFileAction,
-      BlazeDirectories directories,
-      ExternalPackageHelper externalPackageHelper) {
-    return createForTesting(
-        pkgLocator,
-        externalFileAction,
-        directories,
-        ManagedDirectoriesKnowledge.NO_MANAGED_DIRECTORIES,
-        externalPackageHelper);
+        ManagedDirectoriesKnowledge.NO_MANAGED_DIRECTORIES);
   }
 
   private static ExternalFilesHelper createForTesting(
       AtomicReference<PathPackageLocator> pkgLocator,
       ExternalFileAction externalFileAction,
       BlazeDirectories directories,
-      ManagedDirectoriesKnowledge managedDirectoriesKnowledge,
-      ExternalPackageHelper externalPackageHelper) {
+      ManagedDirectoriesKnowledge managedDirectoriesKnowledge) {
     return new ExternalFilesHelper(
         pkgLocator,
         externalFileAction,
         directories,
         // These log lines are mostly spam during unit and integration tests.
         /*maxNumExternalFilesToLog=*/ 0,
-        managedDirectoriesKnowledge,
-        externalPackageHelper);
+        managedDirectoriesKnowledge);
   }
 
 
@@ -151,6 +126,13 @@ public class ExternalFilesHelper {
 
   /** Classification of a path encountered by Bazel. */
   public enum FileType {
+    /**
+     * A path to a file located inside of Bazel, e.g. the bundled builtins_bzl root (for {@code
+     * --experimental_builtins_bzl_root=%bundled%}) that live in an InMemoryFileSystem. These files
+     * must not change throughout the lifetime of the server.
+     */
+    BUNDLED,
+
     /** A path inside the package roots. */
     INTERNAL,
 
@@ -234,8 +216,7 @@ public class ExternalFilesHelper {
         externalFileAction,
         directories,
         maxNumExternalFilesToLog,
-        managedDirectoriesKnowledge,
-        externalPackageHelper);
+        managedDirectoriesKnowledge);
   }
 
   public FileType getAndNoteFileType(RootedPath rootedPath) {
@@ -259,7 +240,14 @@ public class ExternalFilesHelper {
     return Pair.of(fileType, null);
   }
 
+  /**
+   * Returns the classification of a path, and updates this instance's state regarding what kinds of
+   * paths have been seen.
+   */
   private FileType detectFileType(RootedPath rootedPath) {
+    if (rootedPath.getRoot().getFileSystem() instanceof BundledFileSystem) {
+      return FileType.BUNDLED;
+    }
     PathPackageLocator packageLocator = pkgLocator.get();
     if (packageLocator.getPathEntries().contains(rootedPath.getRoot())) {
       return FileType.INTERNAL;
@@ -292,8 +280,7 @@ public class ExternalFilesHelper {
    * a {@link NonexistentImmutableExternalFileException} instead.
    */
   @ThreadSafe
-  FileType maybeHandleExternalFile(
-      RootedPath rootedPath, boolean isDirectory, SkyFunction.Environment env)
+  FileType maybeHandleExternalFile(RootedPath rootedPath, SkyFunction.Environment env)
       throws NonexistentImmutableExternalFileException, IOException, InterruptedException {
     Pair<FileType, RepositoryName> pair = getFileTypeAndRepository(rootedPath);
 
@@ -305,6 +292,7 @@ public class ExternalFilesHelper {
             externalFileAction);
         RepositoryFunction.addManagedDirectoryDependencies(pair.getSecond(), env);
         break;
+      case BUNDLED:
       case INTERNAL:
         break;
       case EXTERNAL:
@@ -322,8 +310,7 @@ public class ExternalFilesHelper {
         Preconditions.checkState(
             externalFileAction == ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS,
             externalFileAction);
-        RepositoryFunction.addExternalFilesDependencies(
-            rootedPath, isDirectory, directories, env, externalPackageHelper);
+        RepositoryFunction.addExternalFilesDependencies(rootedPath, directories, env);
         break;
     }
     return fileType;

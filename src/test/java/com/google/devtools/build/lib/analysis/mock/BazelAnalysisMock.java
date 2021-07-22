@@ -73,6 +73,8 @@ public final class BazelAnalysisMock extends AnalysisMock {
             "register_toolchains('@bazel_tools//tools/cpp:all')",
             "register_toolchains('@bazel_tools//tools/jdk:all')",
             "register_toolchains('@bazel_tools//tools/android:all')",
+            // Note this path is created inside the test infrastructure in
+            // createAndroidBuildContents() below. It may not reflect a real depot path.
             "register_toolchains('@bazel_tools//tools/android/dummy_sdk:all')",
             "register_toolchains('@bazel_tools//tools/python:autodetecting_toolchain')",
             "local_repository(name = 'local_config_platform', path = '"
@@ -199,7 +201,8 @@ public final class BazelAnalysisMock extends AnalysisMock {
         "   name = 'dummy_java_runtime_toolchain',",
         "   toolchain_type = ':runtime_toolchain_type',",
         "   toolchain = ':jdk',",
-        ")");
+        ")",
+        "java_plugins_flag_alias(name = 'java_plugins_flag_alias')");
 
     // Create a default Android target platform.
     // Any tests that create platforms should inherit from this.
@@ -207,7 +210,7 @@ public final class BazelAnalysisMock extends AnalysisMock {
         TestConstants.PLATFORMS_PATH + "/android/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "platform(",
-        "  name = 'android',",
+        "  name = 'armeabi-v7a',",
         "  parents = ['" + TestConstants.PLATFORM_PACKAGE_ROOT + ":default_target'],",
         "  constraint_values = [",
         "    '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:android',",

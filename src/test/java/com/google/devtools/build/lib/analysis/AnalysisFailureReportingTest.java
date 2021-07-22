@@ -32,8 +32,6 @@ import com.google.devtools.build.lib.server.FailureDetails.Analysis;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -44,7 +42,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 /** Analysis failure reporting tests. */
-@TestSpec(size = Suite.SMALL_TESTS)
 @RunWith(JUnit4.class)
 public class AnalysisFailureReportingTest extends AnalysisTestCase {
   private final AnalysisFailureEventCollector collector = new AnalysisFailureEventCollector();
@@ -205,7 +202,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
 
   @Test
   public void testVisibilityErrorNoKeepGoing() throws Exception {
-    scratch.file("foo/BUILD", "sh_library(name = 'foo', deps = ['//bar'])");
+    scratch.file("foo/BUILD", "sh_test(name = 'foo', srcs = ['test.sh'], deps = ['//bar'])");
     scratch.file("bar/BUILD", "sh_library(name = 'bar', visibility = ['//visibility:private'])");
 
     try {
@@ -222,7 +219,7 @@ public class AnalysisFailureReportingTest extends AnalysisTestCase {
                 .getBuildConfigurationCollection()
                 .getTargetConfigurations());
     String message =
-        "in sh_library rule //foo:foo: target '//bar:bar' is not visible from"
+        "in sh_test rule //foo:foo: target '//bar:bar' is not visible from"
             + " target '//foo:foo'. Check the visibility declaration of the"
             + " former target if you think the dependency is legitimate";
     assertThat(collector.events.get(topLevel))

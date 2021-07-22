@@ -14,7 +14,7 @@
 
 package com.google.devtools.build.lib.analysis.actions;
 
-import static com.google.devtools.build.lib.analysis.ToolchainCollection.DEFAULT_EXEC_GROUP_NAME;
+import static com.google.devtools.build.lib.packages.ExecGroup.DEFAULT_EXEC_GROUP_NAME;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.CharMatcher;
@@ -26,7 +26,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.devtools.build.lib.actions.AbstractAction;
-import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionContinuationOrResult;
 import com.google.devtools.build.lib.actions.ActionEnvironment;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
@@ -51,9 +50,8 @@ import com.google.devtools.build.lib.actions.EmptyRunfilesSupplier;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.ParamFileInfo;
-import com.google.devtools.build.lib.actions.ResourceSet;
+import com.google.devtools.build.lib.actions.ResourceSetOrBuilder;
 import com.google.devtools.build.lib.actions.RunfilesSupplier;
-import com.google.devtools.build.lib.actions.SingleStringArgFormatter;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnContinuation;
 import com.google.devtools.build.lib.actions.SpawnResult;
@@ -73,7 +71,7 @@ import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
 import com.google.devtools.build.lib.starlarkbuildapi.CommandLineArgsApi;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Fingerprint;
-import com.google.devtools.build.lib.util.LazyString;
+import com.google.devtools.build.lib.util.OnDemandString;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.ShellEscaper;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -82,7 +80,6 @@ import com.google.errorprone.annotations.DoNotCall;
 import com.google.errorprone.annotations.FormatMethod;
 import com.google.errorprone.annotations.FormatString;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -110,7 +107,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
   private final CharSequence progressMessage;
   private final String mnemonic;
 
-  private final ResourceSet resourceSet;
+  private final ResourceSetOrBuilder resourceSetOrBuilder;
   private final ImmutableMap<String, String> executionInfo;
 
   private final ExtraActionInfoSupplier extraActionInfoSupplier;
@@ -128,7 +125,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
    *     modified.
    * @param outputs the set of all files written by this action; must not be subsequently modified.
    * @param primaryOutput the primary output of this action
-   * @param resourceSet the resources consumed by executing this Action
+   * @param resourceSetOrBuilder the resources consumed by executing this Action.
    * @param env the action environment
    * @param commandLines the command lines to execute. This includes the main argv vector and any
    *     param file-backed command lines.
@@ -144,7 +141,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       NestedSet<Artifact> inputs,
       Iterable<Artifact> outputs,
       Artifact primaryOutput,
-      ResourceSet resourceSet,
+      ResourceSetOrBuilder resourceSetOrBuilder,
       CommandLines commandLines,
       CommandLineLimits commandLineLimits,
       boolean isShellCommand,
@@ -157,7 +154,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         inputs,
         outputs,
         primaryOutput,
-        resourceSet,
+        resourceSetOrBuilder,
         commandLines,
         commandLineLimits,
         isShellCommand,
@@ -183,7 +180,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
    *     modified
    * @param outputs the set of all files written by this action; must not be subsequently modified.
    * @param primaryOutput the primary output of this action
-   * @param resourceSet the resources consumed by executing this Action
+   * @param resourceSetOrBuilder the resources consumed by executing this Action.
    * @param env the action's environment
    * @param executionInfo out-of-band information for scheduling the spawn
    * @param commandLines the command lines to execute. This includes the main argv vector and any
@@ -201,7 +198,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       NestedSet<Artifact> inputs,
       Iterable<? extends Artifact> outputs,
       Artifact primaryOutput,
-      ResourceSet resourceSet,
+      ResourceSetOrBuilder resourceSetOrBuilder,
       CommandLines commandLines,
       CommandLineLimits commandLineLimits,
       boolean isShellCommand,
@@ -215,7 +212,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       Consumer<Pair<ActionExecutionContext, List<SpawnResult>>> resultConsumer) {
     super(owner, tools, inputs, runfilesSupplier, outputs, env);
     this.primaryOutput = primaryOutput;
-    this.resourceSet = resourceSet;
+    this.resourceSetOrBuilder = resourceSetOrBuilder;
     this.executionInfo = executionInfo;
     this.commandLines = commandLines;
     this.commandLineLimits = commandLineLimits;
@@ -360,10 +357,11 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       throws CommandLineExpansionException, InterruptedException {
     return new ActionSpawn(
         commandLines.allArguments(),
-        ImmutableMap.of(),
+        /*env=*/ ImmutableMap.of(),
+        /*envResolved=*/ false,
         inputs,
-        ImmutableList.of(),
-        ImmutableMap.of());
+        /*additionalInputs=*/ ImmutableList.of(),
+        /*filesetMappings=*/ ImmutableMap.of());
   }
 
   /**
@@ -375,19 +373,30 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     return getSpawn(
         actionExecutionContext.getArtifactExpander(),
         actionExecutionContext.getClientEnv(),
+        /*envResolved=*/ false,
         actionExecutionContext.getTopLevelFilesets());
   }
 
+  /**
+   * Return a spawn that is representative of the command that this Action will execute in the given
+   * environment.
+   *
+   * @param envResolved If set to true, the passed environment variables will be used as the Spawn
+   *     effective environment. Otherwise they will be used as client environment to resolve the
+   *     action env.
+   */
   Spawn getSpawn(
       ArtifactExpander artifactExpander,
-      Map<String, String> clientEnv,
+      Map<String, String> env,
+      boolean envResolved,
       Map<Artifact, ImmutableList<FilesetOutputSymlink>> filesetMappings)
       throws CommandLineExpansionException, InterruptedException {
     ExpandedCommandLines expandedCommandLines =
         commandLines.expand(artifactExpander, getPrimaryOutput().getExecPath(), commandLineLimits);
     return new ActionSpawn(
         ImmutableList.copyOf(expandedCommandLines.arguments()),
-        clientEnv,
+        env,
+        envResolved,
         getInputs(),
         expandedCommandLines.getParamFiles(),
         filesetMappings);
@@ -461,7 +470,25 @@ public class SpawnAction extends AbstractAction implements CommandAction {
   @Override
   protected String getRawProgressMessage() {
     if (progressMessage != null) {
-      return progressMessage.toString();
+      if (progressMessage instanceof String) {
+        String progressMessageStr = (String) progressMessage;
+        if (progressMessageStr.contains("%{label}") && getOwner().getLabel() != null) {
+          progressMessageStr =
+              progressMessageStr.replace("%{label}", getOwner().getLabel().toString());
+        }
+        if (progressMessageStr.contains("%{output}") && getPrimaryOutput() != null) {
+          progressMessageStr =
+              progressMessageStr.replace("%{output}", getPrimaryOutput().getExecPathString());
+        }
+        if (progressMessageStr.contains("%{input}") && getPrimaryInput() != null) {
+          progressMessageStr =
+              progressMessageStr.replace("%{input}", getPrimaryInput().getExecPathString());
+        }
+        return progressMessageStr;
+      } else {
+        // handles OnDemandString
+        return progressMessage.toString();
+      }
     }
     return super.getRawProgressMessage();
   }
@@ -540,17 +567,20 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      */
     private ActionSpawn(
         ImmutableList<String> arguments,
-        Map<String, String> clientEnv,
+        Map<String, String> env,
+        boolean envResolved,
         NestedSet<Artifact> inputs,
         Iterable<? extends ActionInput> additionalInputs,
-        Map<Artifact, ImmutableList<FilesetOutputSymlink>> filesetMappings) {
+        Map<Artifact, ImmutableList<FilesetOutputSymlink>> filesetMappings)
+        throws CommandLineExpansionException {
       super(
           arguments,
           ImmutableMap.<String, String>of(),
           executionInfo,
           SpawnAction.this.getRunfilesSupplier(),
           SpawnAction.this,
-          resourceSet);
+          SpawnAction.this.resourceSetOrBuilder.buildResourceSet(inputs));
+
       NestedSetBuilder<ActionInput> inputsBuilder = NestedSetBuilder.stableOrder();
       ImmutableList<Artifact> manifests = getRunfilesSupplier().getManifests();
       for (Artifact input : inputs.toList()) {
@@ -561,9 +591,17 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       inputsBuilder.addAll(additionalInputs);
       this.inputs = inputsBuilder.build();
       this.filesetMappings = filesetMappings;
-      LinkedHashMap<String, String> env = new LinkedHashMap<>(SpawnAction.this.env.size());
-      SpawnAction.this.env.resolve(env, clientEnv);
-      effectiveEnvironment = ImmutableMap.copyOf(env);
+
+      /**
+       * If the action environment is already resolved using the client environment, the given
+       * environment variables are used as they are. Otherwise, they are used as clientEnv to
+       * resolve the action environment variables
+       */
+      if (envResolved) {
+        effectiveEnvironment = ImmutableMap.copyOf(env);
+      } else {
+        effectiveEnvironment = SpawnAction.this.getEffectiveEnvironment(env);
+      }
     }
 
     @Override
@@ -591,7 +629,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     private final NestedSetBuilder<Artifact> inputsBuilder = NestedSetBuilder.stableOrder();
     private final List<Artifact> outputs = new ArrayList<>();
     private final List<RunfilesSupplier> inputRunfilesSuppliers = new ArrayList<>();
-    private ResourceSet resourceSet = AbstractAction.DEFAULT_RESOURCE_SET;
+    private ResourceSetOrBuilder resourceSetOrBuilder = AbstractAction.DEFAULT_RESOURCE_SET;
     private ActionEnvironment actionEnvironment = null;
     private ImmutableMap<String, String> environment = ImmutableMap.of();
     private ImmutableSet<String> inheritedEnvironment = ImmutableSet.of();
@@ -623,7 +661,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       this.inputsBuilder.addTransitive(other.inputsBuilder.build());
       this.outputs.addAll(other.outputs);
       this.inputRunfilesSuppliers.addAll(other.inputRunfilesSuppliers);
-      this.resourceSet = other.resourceSet;
+      this.resourceSetOrBuilder = other.resourceSetOrBuilder;
       this.actionEnvironment = other.actionEnvironment;
       this.environment = other.environment;
       this.executionInfo = other.executionInfo;
@@ -636,9 +674,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     }
 
     /**
-     * Builds the SpawnAction and ParameterFileWriteAction (if param file is used) using the passed-
-     * in action configuration. The first item of the returned array is always the SpawnAction
-     * itself.
+     * Builds the SpawnAction using the passed-in action configuration.
      *
      * <p>This method makes a copy of all the collections, so it is safe to reuse the builder after
      * this method returns.
@@ -649,17 +685,16 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      * This logic was removed, but if people don't notice and still rely on the side-effect, things
      * may break.
      *
-     * @return the SpawnAction and any actions required by it, with the first item always being the
-     *      SpawnAction itself.
+     * @return the SpawnAction.
      */
     @CheckReturnValue
-    public Action[] build(ActionConstructionContext context) {
+    public SpawnAction build(ActionConstructionContext context) {
       return build(context.getActionOwner(execGroup), context.getConfiguration());
     }
 
-    @VisibleForTesting @CheckReturnValue
-    public Action[] build(ActionOwner owner, BuildConfiguration configuration) {
-      Action[] actions = new Action[1];
+    @VisibleForTesting
+    @CheckReturnValue
+    public SpawnAction build(ActionOwner owner, BuildConfiguration configuration) {
       CommandLines.Builder result = CommandLines.builder();
       result.addCommandLine(executableArgs.build());
       for (CommandLineAndParamFileInfo pair : this.commandLines) {
@@ -672,11 +707,8 @@ public class SpawnAction extends AbstractAction implements CommandAction {
               : useDefaultShellEnvironment
                   ? configuration.getActionEnvironment()
                   : ActionEnvironment.create(environment, inheritedEnvironment);
-      Action spawnAction =
-          buildSpawnAction(
-              owner, commandLines, configuration.getCommandLineLimits(), configuration, env);
-      actions[0] = spawnAction;
-      return actions;
+      return buildSpawnAction(
+          owner, commandLines, configuration.getCommandLineLimits(), configuration, env);
     }
 
     @CheckReturnValue
@@ -728,7 +760,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
           inputsAndTools,
           ImmutableList.copyOf(outputs),
           outputs.get(0),
-          resourceSet,
+          resourceSetOrBuilder,
           commandLines,
           commandLineLimits,
           isShellCommand,
@@ -749,7 +781,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         NestedSet<Artifact> inputsAndTools,
         ImmutableList<Artifact> outputs,
         Artifact primaryOutput,
-        ResourceSet resourceSet,
+        ResourceSetOrBuilder resourceSetOrBuilder,
         CommandLines commandLines,
         CommandLineLimits commandLineLimits,
         boolean isShellCommand,
@@ -765,7 +797,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
           inputsAndTools,
           outputs,
           primaryOutput,
-          resourceSet,
+          resourceSetOrBuilder,
           commandLines,
           commandLineLimits,
           isShellCommand,
@@ -869,8 +901,12 @@ public class SpawnAction extends AbstractAction implements CommandAction {
       return !outputs.isEmpty();
     }
 
-    public Builder setResources(ResourceSet resourceSet) {
-      this.resourceSet = resourceSet;
+    /**
+     * Sets RecourceSet for builder. If ResourceSetBuilder set, then ResourceSetBuilder will
+     * override setResources.
+     */
+    public Builder setResources(ResourceSetOrBuilder resourceSetOrBuilder) {
+      this.resourceSetOrBuilder = resourceSetOrBuilder;
       return this;
     }
 
@@ -962,7 +998,12 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     }
 
     /**
-     * Sets the executable path; the path is interpreted relative to the execution root.
+     * Sets the executable path; the path is interpreted relative to the execution root, unless it's
+     * a bare file name.
+     *
+     * <p><b>Caution</b>: if the executable is a bare file name ("foo"), it will be interpreted
+     * relative to PATH. See https://github.com/bazelbuild/bazel/issues/13189 for details. To avoid
+     * that, use {@link #setExecutable(Artifact)} instead.
      *
      * <p>Calling this method overrides any previous values set via calls to {@link #setExecutable},
      * {@link #setJavaExecutable}, or {@link #setShellCommand}.
@@ -981,7 +1022,9 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      */
     public Builder setExecutable(Artifact executable) {
       addTool(executable);
-      return setExecutable(executable.getExecPath());
+      this.executableArgs = CustomCommandLine.builder().addCallablePath(executable.getExecPath());
+      this.isShellCommand = false;
+      return this;
     }
 
     /**
@@ -1007,7 +1050,10 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     public Builder setExecutable(FilesToRunProvider executableProvider) {
       Preconditions.checkArgument(executableProvider.getExecutable() != null,
           "The target does not have an executable");
-      setExecutable(executableProvider.getExecutable().getExecPath());
+      this.executableArgs =
+          CustomCommandLine.builder()
+              .addCallablePath(executableProvider.getExecutable().getExecPath());
+      this.isShellCommand = false;
       return addTool(executableProvider);
     }
 
@@ -1144,13 +1190,9 @@ public class SpawnAction extends AbstractAction implements CommandAction {
     /**
      * Sets the progress message.
      *
-     * <p>If you are formatting the string in any way, prefer one of the overloads that do the
-     * formatting lazily. This helps save memory by delaying the construction of the progress
-     * message string.
-     *
-     * <p>If you cannot use simple formatting, try {@link Builder#setProgressMessage(LazyString)}.
-     *
-     * <p>If you must eagerly compute the string, use {@link Builder#setProgressMessageNonLazy}.
+     * <p>The message may contain <code>%{label}</code>, <code>%{input}</code> or <code>%{output}
+     * </code> patterns, which are substituted with label string, first input or output's path,
+     * respectively.
      */
     public Builder setProgressMessage(@CompileTimeConstant String progressMessage) {
       this.progressMessage = progressMessage;
@@ -1162,11 +1204,13 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      *
      * @param progressMessage The message to display
      * @param subject Passed to {@link String#format}
+     * @deprecated Use {@link #setProgressMessage(String)} with provided patterns.
      */
     @FormatMethod
+    @Deprecated
     public Builder setProgressMessage(@FormatString String progressMessage, Object subject) {
       return setProgressMessage(
-          new LazyString() {
+          new OnDemandString() {
             @Override
             public String toString() {
               return String.format(progressMessage, subject);
@@ -1180,12 +1224,14 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      * @param progressMessage The message to display
      * @param subject0 Passed to {@link String#format}
      * @param subject1 Passed to {@link String#format}
+     * @deprecated Use {@link #setProgressMessage(String)} with provided patterns.
      */
     @FormatMethod
+    @Deprecated
     public Builder setProgressMessage(
         @FormatString String progressMessage, Object subject0, Object subject1) {
       return setProgressMessage(
-          new LazyString() {
+          new OnDemandString() {
             @Override
             public String toString() {
               return String.format(progressMessage, subject0, subject1);
@@ -1200,12 +1246,14 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      * @param subject0 Passed to {@link String#format}
      * @param subject1 Passed to {@link String#format}
      * @param subject2 Passed to {@link String#format}
+     * @deprecated Use {@link #setProgressMessage(String)} with provided patterns.
      */
     @FormatMethod
+    @Deprecated
     public Builder setProgressMessage(
         @FormatString String progressMessage, Object subject0, Object subject1, Object subject2) {
       return setProgressMessage(
-          new LazyString() {
+          new OnDemandString() {
             @Override
             public String toString() {
               return String.format(progressMessage, subject0, subject1, subject2);
@@ -1221,8 +1269,10 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      * @param subject1 Passed to {@link String#format}
      * @param subject2 Passed to {@link String#format}
      * @param subject3 Passed to {@link String#format}
+     * @deprecated Use {@link #setProgressMessage(String)} with provided patterns.
      */
     @FormatMethod
+    @Deprecated
     public Builder setProgressMessage(
         @FormatString String progressMessage,
         Object subject0,
@@ -1230,7 +1280,7 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         Object subject2,
         Object subject3) {
       return setProgressMessage(
-          new LazyString() {
+          new OnDemandString() {
             @Override
             public String toString() {
               return String.format(progressMessage, subject0, subject1, subject2, subject3);
@@ -1244,17 +1294,18 @@ public class SpawnAction extends AbstractAction implements CommandAction {
      * <p>When possible, prefer use of one of the overloads that use {@link String#format}. If you
      * do use this overload, take care not to capture anything expensive.
      */
-    public Builder setProgressMessage(LazyString progressMessage) {
+    private Builder setProgressMessage(OnDemandString progressMessage) {
       this.progressMessage = progressMessage;
       return this;
     }
 
     /**
-     * Sets an eagerly computed progress message.
+     * Sets the progress message.
      *
-     * <p>Prefer one of the lazy overloads whenever possible, as it will generally save memory.
+     * <p>Same as {@link #setProgressMessage(String)}, except that it may be used with non compile
+     * time constants (needed for Starlark literals).
      */
-    public Builder setProgressMessageNonLazy(String progressMessage) {
+    public Builder setProgressMessageFromStarlark(String progressMessage) {
       this.progressMessage = progressMessage;
       return this;
     }
@@ -1293,54 +1344,6 @@ public class SpawnAction extends AbstractAction implements CommandAction {
         Consumer<Pair<ActionExecutionContext, List<SpawnResult>>> resultConsumer) {
       this.resultConsumer = resultConsumer;
       return this;
-    }
-  }
-
-  /**
-   * Command line implementation that optimises for containing executable args, command lines, and
-   * command lines spilled to param files.
-   */
-  static class SpawnActionCommandLine extends CommandLine {
-    private final Object[] values;
-
-    SpawnActionCommandLine(Object[] values) {
-      this.values = values;
-    }
-
-    @Override
-    public Iterable<String> arguments() throws CommandLineExpansionException, InterruptedException {
-      return expandArguments(null);
-    }
-
-    @Override
-    public Iterable<String> arguments(ArtifactExpander artifactExpander)
-        throws CommandLineExpansionException, InterruptedException {
-      return expandArguments(artifactExpander);
-    }
-
-    private Iterable<String> expandArguments(@Nullable ArtifactExpander artifactExpander)
-        throws CommandLineExpansionException, InterruptedException {
-      ImmutableList.Builder<String> result = ImmutableList.builder();
-      int count = values.length;
-      for (int i = 0; i < count; ++i) {
-        Object value = values[i];
-        if (value instanceof String) {
-          result.add((String) value);
-        } else if (value instanceof Artifact) {
-          Artifact paramFile = (Artifact) value;
-          String flagFormatString = (String) values[++i];
-          result.add(
-              SingleStringArgFormatter.format(flagFormatString, paramFile.getExecPathString()));
-        } else if (value instanceof CommandLine) {
-          CommandLine commandLine = (CommandLine) value;
-          if (artifactExpander != null) {
-            result.addAll(commandLine.arguments(artifactExpander));
-          } else {
-            result.addAll(commandLine.arguments());
-          }
-        }
-      }
-      return result.build();
     }
   }
 

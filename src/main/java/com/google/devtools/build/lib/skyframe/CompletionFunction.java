@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
-
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,7 +26,7 @@ import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.CompletionContext;
 import com.google.devtools.build.lib.actions.CompletionContext.PathResolverFactory;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
-import com.google.devtools.build.lib.actions.MissingInputFileException;
+import com.google.devtools.build.lib.actions.InputFileErrorException;
 import com.google.devtools.build.lib.analysis.ConfiguredObjectValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactContext;
@@ -35,7 +34,7 @@ import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsInOutputGroup;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsToBuild;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.SuccessfulArtifactFilter;
-import com.google.devtools.build.lib.bugreport.BugReport;
+import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.causes.Cause;
 import com.google.devtools.build.lib.causes.LabelCause;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -43,19 +42,23 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
-import com.google.devtools.build.lib.skyframe.ArtifactFunction.MissingFileArtifactValue;
+import com.google.devtools.build.lib.skyframe.ArtifactFunction.MissingArtifactValue;
+import com.google.devtools.build.lib.skyframe.ArtifactFunction.SourceArtifactException;
 import com.google.devtools.build.lib.skyframe.CompletionFunction.TopLevelActionLookupKey;
 import com.google.devtools.build.lib.skyframe.MetadataConsumerForMetrics.FilesMetricConsumer;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.ValueOrException2;
-import java.io.IOException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import javax.annotation.Nullable;
+import net.starlark.java.syntax.Location;
 
 /** CompletionFunction builds the artifactsToBuild collection of a {@link ConfiguredTarget}. */
 public final class CompletionFunction<
@@ -86,9 +89,9 @@ public final class CompletionFunction<
     Event getRootCauseError(ValueT value, KeyT key, LabelCause rootCause, Environment env)
         throws InterruptedException;
 
-    /** Creates an error message reporting {@code missingCount} missing input files. */
-    MissingInputFileException getMissingFilesException(
-        ValueT value, KeyT key, int missingCount, Environment env) throws InterruptedException;
+    @Nullable
+    Object getLocationIdentifier(ValueT value, KeyT key, Environment env)
+        throws InterruptedException;
 
     /** Provides a successful completion value. */
     ResultT getResult();
@@ -130,16 +133,19 @@ public final class CompletionFunction<
   private final Completor<ValueT, ResultT, KeyT, FailureT> completor;
   private final SkyframeActionExecutor skyframeActionExecutor;
   private final FilesMetricConsumer topLevelArtifactsMetric;
+  private final BugReporter bugReporter;
 
   CompletionFunction(
       PathResolverFactory pathResolverFactory,
       Completor<ValueT, ResultT, KeyT, FailureT> completor,
       SkyframeActionExecutor skyframeActionExecutor,
-      FilesMetricConsumer topLevelArtifactsMetric) {
+      FilesMetricConsumer topLevelArtifactsMetric,
+      BugReporter bugReporter) {
     this.pathResolverFactory = pathResolverFactory;
     this.completor = completor;
     this.skyframeActionExecutor = skyframeActionExecutor;
     this.topLevelArtifactsMetric = topLevelArtifactsMetric;
+    this.bugReporter = bugReporter;
   }
 
   @SuppressWarnings("unchecked") // Cast to KeyT
@@ -161,21 +167,39 @@ public final class CompletionFunction<
     ValueT value = valueAndArtifactsToBuild.first;
     ArtifactsToBuild artifactsToBuild = valueAndArtifactsToBuild.second;
 
-    // Avoid iterating over nested set twice.
     ImmutableList<Artifact> allArtifacts = artifactsToBuild.getAllArtifacts().toList();
-    Map<SkyKey, ValueOrException2<ActionExecutionException, IOException>> inputDeps =
+    Map<SkyKey, ValueOrException2<ActionExecutionException, SourceArtifactException>> inputDeps =
         env.getValuesOrThrow(
-            Artifact.keys(allArtifacts), ActionExecutionException.class, IOException.class);
+            Artifact.keys(allArtifacts),
+            ActionExecutionException.class,
+            SourceArtifactException.class);
 
-    ActionInputMap inputMap = new ActionInputMap(inputDeps.size());
-    Map<Artifact, ImmutableCollection<Artifact>> expandedArtifacts = new HashMap<>();
+    boolean allArtifactsAreImportant = artifactsToBuild.areAllOutputGroupsImportant();
+
+    ActionInputMap inputMap = new ActionInputMap(bugReporter, inputDeps.size());
+    // Prepare an ActionInputMap for important artifacts separately, to be used by BEP events. The
+    // _validation output group can contain orders of magnitude more unimportant artifacts than
+    // there are important artifacts, and BEP events will retain the ActionInputMap until the
+    // event is delivered to transports. If the BEP events reference *all* artifacts it can increase
+    // heap high-watermark by multiple GB.
+    ActionInputMap importantInputMap;
+    Set<Artifact> importantArtifactSet;
+    if (allArtifactsAreImportant) {
+      importantArtifactSet = ImmutableSet.of();
+      importantInputMap = inputMap;
+    } else {
+      ImmutableList<Artifact> importantArtifacts =
+          artifactsToBuild.getImportantArtifacts().toList();
+      importantArtifactSet = new HashSet<>(importantArtifacts);
+      importantInputMap = new ActionInputMap(bugReporter, importantArtifacts.size());
+    }
+
+    Map<Artifact, ImmutableCollection<? extends Artifact>> expandedArtifacts = new HashMap<>();
     Map<Artifact, ImmutableList<FilesetOutputSymlink>> expandedFilesets = new HashMap<>();
     Map<SpecialArtifact, ArchivedTreeArtifact> archivedTreeArtifacts = new HashMap<>();
     Map<Artifact, ImmutableList<FilesetOutputSymlink>> topLevelFilesets = new HashMap<>();
 
-    int missingCount = 0;
     ActionExecutionException firstActionExecutionException = null;
-    MissingInputFileException missingInputException = null;
     NestedSetBuilder<Cause> rootCausesBuilder = NestedSetBuilder.stableOrder();
     ImmutableSet.Builder<Artifact> builtArtifactsBuilder = ImmutableSet.builder();
     // Don't double-count files due to Skyframe restarts.
@@ -184,11 +208,10 @@ public final class CompletionFunction<
       try {
         SkyValue artifactValue = inputDeps.get(Artifact.key(input)).get();
         if (artifactValue != null) {
-          if (artifactValue instanceof MissingFileArtifactValue) {
-            missingCount++;
-            handleMissingFile(
+          if (artifactValue instanceof MissingArtifactValue) {
+            handleSourceFileError(
                 input,
-                (MissingFileArtifactValue) artifactValue,
+                ((MissingArtifactValue) artifactValue).getDetailedExitCode(),
                 rootCausesBuilder,
                 env,
                 value,
@@ -205,6 +228,22 @@ public final class CompletionFunction<
                 artifactValue,
                 env,
                 currentConsumer);
+            if (!allArtifactsAreImportant && importantArtifactSet.contains(input)) {
+              // Calling #addToMap a second time with `input` and `artifactValue` will perform no-op
+              // updates to the secondary collections passed in (eg. expandedArtifacts,
+              // topLevelFilesets). MetadataConsumerForMetrics.NO_OP is used to avoid
+              // double-counting.
+              ActionInputMapHelper.addToMap(
+                  importantInputMap,
+                  expandedArtifacts,
+                  archivedTreeArtifacts,
+                  expandedFilesets,
+                  topLevelFilesets,
+                  input,
+                  artifactValue,
+                  env,
+                  MetadataConsumerForMetrics.NO_OP);
+            }
           }
         }
       } catch (ActionExecutionException e) {
@@ -214,30 +253,16 @@ public final class CompletionFunction<
             || (!firstActionExecutionException.isCatastrophe() && e.isCatastrophe())) {
           firstActionExecutionException = e;
         }
-      } catch (IOException e) {
+      } catch (SourceArtifactException e) {
         if (!input.isSourceArtifact()) {
-          BugReport.sendBugReport(
+          bugReporter.sendBugReport(
               new IllegalStateException(
-                  "Unexpected IOException for generated artifact: " + input, e));
+                  "Non-source artifact had SourceArtifactException: " + input, e));
         }
-        missingCount++;
-        handleMissingFile(
-            input,
-            ArtifactFunction.makeIOExceptionSourceInputFileValue(input, e),
-            rootCausesBuilder,
-            env,
-            value,
-            key);
+        handleSourceFileError(input, e.getDetailedExitCode(), rootCausesBuilder, env, value, key);
       }
     }
     expandedFilesets.putAll(topLevelFilesets);
-
-    if (missingCount > 0) {
-      missingInputException = completor.getMissingFilesException(value, key, missingCount, env);
-      if (missingInputException == null) {
-        return null;
-      }
-    }
 
     NestedSet<Cause> rootCauses = rootCausesBuilder.build();
     @Nullable FailureT failureData = null;
@@ -248,21 +273,17 @@ public final class CompletionFunction<
       }
     }
 
-    final CompletionContext ctx;
-    try {
-      ctx =
-          CompletionContext.create(
-              expandedArtifacts,
-              expandedFilesets,
-              key.topLevelArtifactContext().expandFilesets(),
-              key.topLevelArtifactContext().fullyResolveFilesetSymlinks(),
-              inputMap,
-              pathResolverFactory,
-              skyframeActionExecutor.getExecRoot(),
-              workspaceNameValue.getName());
-    } catch (IOException e) {
-      throw new CompletionFunctionException(e);
-    }
+    CompletionContext ctx =
+        CompletionContext.create(
+            expandedArtifacts,
+            expandedFilesets,
+            key.topLevelArtifactContext().expandFilesets(),
+            key.topLevelArtifactContext().fullyResolveFilesetSymlinks(),
+            inputMap,
+            importantInputMap,
+            pathResolverFactory,
+            skyframeActionExecutor.getExecRoot(),
+            workspaceNameValue.getName());
 
     if (!rootCauses.isEmpty()) {
       ImmutableMap<String, ArtifactsInOutputGroup> builtOutputs =
@@ -272,9 +293,22 @@ public final class CompletionFunction<
           .post(completor.createFailed(value, rootCauses, ctx, builtOutputs, failureData));
       if (firstActionExecutionException != null) {
         throw new CompletionFunctionException(firstActionExecutionException);
-      } else {
-        throw new CompletionFunctionException(missingInputException);
       }
+      // locationPrefix theoretically *could* be null because of missing deps, but not in reality,
+      // and we're not allowed to wait for deps to be ready if we're failing anyway.
+      @Nullable Object locationPrefix = completor.getLocationIdentifier(value, key, env);
+      Pair<DetailedExitCode, String> codeAndMessage =
+          ActionExecutionFunction.createSourceErrorCodeAndMessage(rootCauses.toList(), key);
+      String message;
+      if (locationPrefix instanceof Location) {
+        message = codeAndMessage.getSecond();
+        env.getListener().handle(Event.error((Location) locationPrefix, message));
+      } else {
+        message = (locationPrefix == null ? "" : locationPrefix + " ") + codeAndMessage.getSecond();
+        env.getListener().handle(Event.error(message));
+      }
+      throw new CompletionFunctionException(
+          new InputFileErrorException(message, codeAndMessage.getFirst()));
     }
 
     // Only check for missing values *after* reporting errors: if there are missing files in a build
@@ -294,9 +328,9 @@ public final class CompletionFunction<
     return completor.getResult();
   }
 
-  private void handleMissingFile(
+  private void handleSourceFileError(
       Artifact input,
-      MissingFileArtifactValue artifactValue,
+      DetailedExitCode detailedExitCode,
       NestedSetBuilder<Cause> rootCausesBuilder,
       Environment env,
       ValueT value,
@@ -304,7 +338,7 @@ public final class CompletionFunction<
       throws InterruptedException {
     LabelCause cause =
         ActionExecutionFunction.createLabelCause(
-            input, artifactValue, key.actionLookupKey().getLabel());
+            input, detailedExitCode, key.actionLookupKey().getLabel(), bugReporter);
     rootCausesBuilder.add(cause);
     env.getListener().handle(completor.getRootCauseError(value, key, cause, env));
     skyframeActionExecutor.recordExecutionError();
@@ -332,21 +366,16 @@ public final class CompletionFunction<
   }
 
   private static final class CompletionFunctionException extends SkyFunctionException {
-
     private final ActionExecutionException actionException;
 
-    public CompletionFunctionException(ActionExecutionException e) {
+    CompletionFunctionException(ActionExecutionException e) {
       super(e, Transience.PERSISTENT);
       this.actionException = e;
     }
 
-    public CompletionFunctionException(MissingInputFileException e) {
-      super(e, Transience.TRANSIENT);
-      this.actionException = null;
-    }
-
-    public CompletionFunctionException(IOException e) {
-      super(e, Transience.TRANSIENT);
+    CompletionFunctionException(InputFileErrorException e) {
+      // Not transient from the point of view of this SkyFunction.
+      super(e, Transience.PERSISTENT);
       this.actionException = null;
     }
 

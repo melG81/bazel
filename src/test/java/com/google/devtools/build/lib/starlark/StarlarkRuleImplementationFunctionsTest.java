@@ -311,6 +311,26 @@ public class StarlarkRuleImplementationFunctionsTest extends BuildViewTestCase {
   }
 
   @Test
+  public void createSpawnAction_progressMessageWithSubstitutions() throws Exception {
+    StarlarkRuleContext ruleContext = createRuleContext("//foo:foo");
+    setRuleContext(ruleContext);
+    ev.exec(
+        "ruleContext.actions.run(",
+        "  inputs = ruleContext.files.srcs,",
+        "  outputs = ruleContext.files.srcs[1:],",
+        "  executable = ruleContext.files.tools[0],",
+        "  mnemonic = 'DummyMnemonic',",
+        "  progress_message = 'message %{label} %{input} %{output}')");
+
+    SpawnAction action =
+        (SpawnAction)
+            Iterables.getOnlyElement(
+                ruleContext.getRuleContext().getAnalysisEnvironment().getRegisteredActions());
+
+    assertThat(action.getProgressMessage()).isEqualTo("message //foo:foo foo/a.txt foo/b.img");
+  }
+
+  @Test
   public void testCreateActionWithDepsetInput() throws Exception {
     // Same test as above, with depset as inputs.
     StarlarkRuleContext ruleContext = createRuleContext("//foo:foo");
@@ -1794,6 +1814,13 @@ public class StarlarkRuleImplementationFunctionsTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testKindForConfiguredTarget() throws Exception {
+    setRuleContext(createRuleContext("//foo:bar"));
+    Object result = ev.eval("ruleContext.attr.srcs[0].kind");
+    assertThat((String) result).isEqualTo("java_library");
+  }
+
+  @Test
   public void testCtxStructFieldsCustomErrorMessages() throws Exception {
     setRuleContext(createRuleContext("//foo:foo"));
     ev.checkEvalErrorContains("No attribute 'foo' in attr.", "ruleContext.attr.foo");
@@ -2479,7 +2506,7 @@ public class StarlarkRuleImplementationFunctionsTest extends BuildViewTestCase {
 
   @Test
   public void testConfigurationField_starlarkSplitTransitionProhibited() throws Exception {
-    scratch.file(
+    scratch.overwriteFile(
         "tools/allowlists/function_transition_allowlist/BUILD",
         "package_group(",
         "    name = 'function_transition_allowlist',",
@@ -2507,8 +2534,6 @@ public class StarlarkRuleImplementationFunctionsTest extends BuildViewTestCase {
         "        default = configuration_field(fragment='cpp', name = 'cc_toolchain'))})");
 
     scratch.file("test/BUILD", "load('//test:rule.bzl', 'foo')", "foo(name='foo')");
-
-    setBuildLanguageOptions("--experimental_starlark_config_transitions=true");
 
     reporter.removeHandler(failFastHandler);
     getConfiguredTarget("//test:foo");

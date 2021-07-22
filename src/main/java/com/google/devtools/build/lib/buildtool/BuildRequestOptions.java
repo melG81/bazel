@@ -13,8 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.buildtool;
 
+import com.github.benmanes.caffeine.cache.CaffeineSpec;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.cache.CacheBuilderSpec;
 import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.actions.LocalHostCapacity;
 import com.google.devtools.build.lib.util.OptionsUtils;
@@ -22,7 +22,7 @@ import com.google.devtools.build.lib.util.ResourceConverter;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.BoolOrEnumConverter;
 import com.google.devtools.common.options.Converters;
-import com.google.devtools.common.options.Converters.CacheBuilderSpecConverter;
+import com.google.devtools.common.options.Converters.CaffeineSpecConverter;
 import com.google.devtools.common.options.Converters.RangeConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDefinition;
@@ -154,11 +154,27 @@ public class BuildRequestOptions extends OptionsBase {
 
   @Option(
       name = "experimental_run_validations",
-      defaultValue = "false",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
+      effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
+      help = "Use --run_validations instead.")
+  public boolean experimentalRunValidationActions;
+
+  @Option(
+      name = "run_validations",
+      defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
       effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
       help = "Whether to run validation actions as part of the build.")
   public boolean runValidationActions;
+
+  @Option(
+      name = "experimental_use_validation_aspect",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
+      effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
+      help = "Whether to run validation actions using aspect (for parallelism with tests).")
+  public boolean useValidationAspect;
 
   @Option(
       name = "show_result",
@@ -275,11 +291,11 @@ public class BuildRequestOptions extends OptionsBase {
       defaultValue = "maximumSize=100000",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
       effectTags = {OptionEffectTag.EXECUTION},
-      converter = CacheBuilderSpecConverter.class,
+      converter = CaffeineSpecConverter.class,
       help =
           "Describes the cache used to store known regular directories as they're created. Parent"
               + " directories of output files are created on-demand during action execution.")
-  public CacheBuilderSpec directoryCreationCacheSpec;
+  public CaffeineSpec directoryCreationCacheSpec;
 
   @Option(
       name = "aspects",
@@ -409,17 +425,6 @@ public class BuildRequestOptions extends OptionsBase {
   public boolean incompatibleSkipGenfilesSymlink;
 
   @Option(
-      name = "experimental_nested_set_as_skykey_threshold",
-      defaultValue = "1",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      metadataTags = OptionMetadataTag.EXPERIMENTAL,
-      effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.LOSES_INCREMENTAL_STATE},
-      help =
-          "If this flag is set with a non-zero value, NestedSets whose size exceeds the threshold"
-              + " will be evaluated as a unit on Skyframe.")
-  public int nestedSetAsSkyKeyThreshold;
-
-  @Option(
       name = "experimental_use_fork_join_pool",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
@@ -467,17 +472,6 @@ public class BuildRequestOptions extends OptionsBase {
       effectTags = {OptionEffectTag.EXECUTION},
       help = "The number of threads that are used by the FileSystemValueChecker.")
   public int fsvcThreads;
-
-  @Option(
-      name = "experimental_no_product_name_out_symlink",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      metadataTags = OptionMetadataTag.EXPERIMENTAL,
-      effectTags = {OptionEffectTag.EXECUTION},
-      help =
-          "If this flag is set to true, the <product>-out symlink will not be created if "
-              + "--symlink_prefix is used.")
-  public boolean experimentalNoProductNameOutSymlink;
 
   @Option(
       name = "experimental_aquery_dump_after_build_format",

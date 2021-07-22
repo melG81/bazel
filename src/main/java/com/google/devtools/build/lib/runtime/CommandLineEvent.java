@@ -42,6 +42,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -255,9 +256,7 @@ public abstract class CommandLineEvent implements BuildEventWithOrderConstraint 
 
     private CommandLineSection getExplicitCommandOptions() {
       List<ParsedOptionDescription> explicitOptions =
-          commandOptions
-              .asListOfExplicitOptions()
-              .stream()
+          commandOptions.asListOfExplicitOptions().stream()
               .filter(
                   parsedOptionDescription ->
                       parsedOptionDescription.getPriority().getPriorityCategory()
@@ -349,8 +348,7 @@ public abstract class CommandLineEvent implements BuildEventWithOrderConstraint 
           .setOptionList(
               OptionList.newBuilder()
                   .addAllOption(
-                      unfilteredOptions
-                          .stream()
+                      unfilteredOptions.stream()
                           .filter(
                               option -> {
                                 String optionName = option.getOptionName();
@@ -383,6 +381,23 @@ public abstract class CommandLineEvent implements BuildEventWithOrderConstraint 
                           commandOptions.asListOfCanonicalOptions()))
                   .addAllOption(starlarkOptions))
           .build();
+    }
+
+    public long getExplicitCommandLineHash() {
+      long hash = 0;
+      for (Entry<String, Object> starlarkOption : commandOptions.getStarlarkOptions().entrySet()) {
+        hash = hash * 31 + starlarkOption.toString().hashCode();
+      }
+      for (ParsedOptionDescription canonicalOptionDesc :
+          commandOptions.asListOfCanonicalOptions()) {
+        if (canonicalOptionDesc == null
+            || canonicalOptionDesc.isHidden()
+            || !"command line options".equals(canonicalOptionDesc.getSource())) {
+          continue;
+        }
+        hash = hash * 31 + canonicalOptionDesc.getCanonicalForm().hashCode();
+      }
+      return hash;
     }
 
     @Override

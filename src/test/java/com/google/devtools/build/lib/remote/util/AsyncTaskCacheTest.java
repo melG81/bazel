@@ -15,15 +15,21 @@ package com.google.devtools.build.lib.remote.util;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.util.concurrent.SettableFuture;
+import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.core.SingleEmitter;
 import io.reactivex.rxjava3.observers.TestObserver;
-import io.reactivex.rxjava3.plugins.RxJavaPlugins;
+import java.io.IOException;
+import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -32,21 +38,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class AsyncTaskCacheTest {
 
-  private final AtomicReference<Throwable> rxGlobalThrowable = new AtomicReference<>(null);
-
-  @Before
-  public void setUp() {
-    RxJavaPlugins.setErrorHandler(rxGlobalThrowable::set);
-  }
-
-  @After
-  public void tearDown() throws Throwable {
-    // Make sure rxjava didn't receive global errors
-    Throwable t = rxGlobalThrowable.getAndSet(null);
-    if (t != null) {
-      throw t;
-    }
-  }
+  @Rule public final RxNoGlobalErrorsRule rxNoGlobalErrorsRule = new RxNoGlobalErrorsRule();
 
   @Test
   public void execute_noSubscription_noExecution() {
@@ -295,5 +287,103 @@ public class AsyncTaskCacheTest {
     observer2.assertEmpty();
     assertThat(cache.getInProgressTasks()).containsExactly("key2");
     assertThat(cache.getFinishedTasks()).containsExactly("key1");
+  }
+
+  private Completable newTask(ExecutorService executorService) {
+    return RxFutures.toCompletable(
+        () -> {
+          SettableFuture<Void> future = SettableFuture.create();
+          executorService.execute(
+              () -> {
+                try {
+                  Thread.sleep((long) (Math.random() * 1000));
+                  future.set(null);
+                } catch (InterruptedException e) {
+                  future.setException(new IOException(e));
+                }
+              });
+          return future;
+        },
+        executorService);
+  }
+
+  @Test
+  public void execute_executeAndDisposeLoop_noErrors() throws Throwable {
+    int taskCount = 1000;
+    int maxKey = 20;
+    Random random = new Random();
+    ExecutorService executorService = Executors.newFixedThreadPool(taskCount);
+    AsyncTaskCache.NoResult<String> cache = AsyncTaskCache.NoResult.create();
+    AtomicReference<Throwable> error = new AtomicReference<>(null);
+    Semaphore semaphore = new Semaphore(0);
+
+    for (int i = 0; i < taskCount; ++i) {
+      executorService.execute(
+          () -> {
+            try {
+              Completable task =
+                  cache.execute("key" + random.nextInt(maxKey), newTask(executorService), true);
+              TestObserver<Void> observer = task.test();
+              observer.assertNoErrors();
+              if (random.nextBoolean()) {
+                observer.dispose();
+              } else {
+                observer.await();
+                observer.assertNoErrors();
+              }
+            } catch (Throwable e) {
+              if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+              }
+              error.set(e);
+            } finally {
+              semaphore.release();
+            }
+          });
+    }
+    semaphore.acquire(taskCount);
+
+    if (error.get() != null) {
+      throw error.get();
+    }
+  }
+
+  @Test
+  public void execute_executeWithFutureAndCancelLoop_noErrors() throws Throwable {
+    int taskCount = 1000;
+    int maxKey = 20;
+    Random random = new Random();
+    ExecutorService executorService = Executors.newFixedThreadPool(taskCount);
+    AsyncTaskCache.NoResult<String> cache = AsyncTaskCache.NoResult.create();
+    AtomicReference<Throwable> error = new AtomicReference<>(null);
+    Semaphore semaphore = new Semaphore(0);
+
+    for (int i = 0; i < taskCount; ++i) {
+      executorService.execute(
+          () -> {
+            try {
+              Completable download =
+                  cache.execute("key" + random.nextInt(maxKey), newTask(executorService), true);
+              Future<Void> future = RxFutures.toListenableFuture(download);
+              if (!future.isDone() && random.nextBoolean()) {
+                future.cancel(true);
+              } else {
+                future.get();
+              }
+            } catch (Throwable e) {
+              if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+              }
+              error.set(e);
+            } finally {
+              semaphore.release();
+            }
+          });
+    }
+    semaphore.acquire(taskCount);
+
+    if (error.get() != null) {
+      throw error.get();
+    }
   }
 }

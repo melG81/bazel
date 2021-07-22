@@ -320,7 +320,8 @@ EOF
   assert_equals "1" $work_count
 }
 
-function test_build_succeeds_even_if_worker_exits() {
+# Disabled for being flaky, see b/182373389
+function DISABLED_test_build_succeeds_even_if_worker_exits() {
   prepare_example_worker
   cat >>BUILD <<EOF
 [work(
@@ -359,6 +360,8 @@ EOF
     && fail "expected build to fail" || true
 
   expect_log "Worker process did not return a WorkResponse:"
+  # Worker log gets displayed on error, including verbosity messages.
+  expect_log "VERBOSE: Pretending to do work."
 }
 
 function test_worker_restarts_when_worker_binary_changes() {
@@ -472,7 +475,8 @@ EOF
   # Check that a helpful error message was printed.
   expect_log "Worker process returned an unparseable WorkResponse!"
   expect_log "Did you try to print something to stdout"
-  expect_log "I'm a poisoned worker and this is not a protobuf."
+  expect_log "Not UTF-8, printing first 1024 bytes as hex"
+  expect_log "49 27 6D 20 61 20 70 6F  69 73 6F 6E 65 64 20 77  |I'm a po isoned w|"
 }
 
 function test_input_digests() {

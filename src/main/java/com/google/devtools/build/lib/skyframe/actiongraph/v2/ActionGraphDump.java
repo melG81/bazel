@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.query2.aquery.AqueryActionFilter;
 import com.google.devtools.build.lib.query2.aquery.AqueryUtils;
+import com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue;
 import com.google.devtools.build.lib.util.Pair;
 import java.io.IOException;
 import java.util.HashMap;
@@ -49,11 +50,8 @@ import javax.annotation.Nullable;
  * proto format.
  */
 public class ActionGraphDump {
-
   private final ActionKeyContext actionKeyContext = new ActionKeyContext();
   private final Set<String> actionGraphTargets;
-
-  private final KnownRuleClassStrings knownRuleClassStrings;
   private final KnownArtifacts knownArtifacts;
   private final KnownConfigurations knownConfigurations;
   private final KnownNestedSets knownNestedSets;
@@ -72,6 +70,7 @@ public class ActionGraphDump {
       boolean includeArtifacts,
       AqueryActionFilter actionFilters,
       boolean includeParamFiles,
+      boolean deduplicateDepsets,
       AqueryOutputHandler aqueryOutputHandler) {
     this(
         /* actionGraphTargets= */ ImmutableList.of("..."),
@@ -79,6 +78,7 @@ public class ActionGraphDump {
         includeArtifacts,
         actionFilters,
         includeParamFiles,
+        deduplicateDepsets,
         aqueryOutputHandler);
   }
 
@@ -88,6 +88,7 @@ public class ActionGraphDump {
       boolean includeArtifacts,
       AqueryActionFilter actionFilters,
       boolean includeParamFiles,
+      boolean deduplicateDepsets,
       AqueryOutputHandler aqueryOutputHandler) {
     this.actionGraphTargets = ImmutableSet.copyOf(actionGraphTargets);
     this.includeActionCmdLine = includeActionCmdLine;
@@ -96,10 +97,10 @@ public class ActionGraphDump {
     this.includeParamFiles = includeParamFiles;
     this.aqueryOutputHandler = aqueryOutputHandler;
 
-    knownRuleClassStrings = new KnownRuleClassStrings(aqueryOutputHandler);
+    KnownRuleClassStrings knownRuleClassStrings = new KnownRuleClassStrings(aqueryOutputHandler);
     knownArtifacts = new KnownArtifacts(aqueryOutputHandler);
     knownConfigurations = new KnownConfigurations(aqueryOutputHandler);
-    knownNestedSets = new KnownNestedSets(aqueryOutputHandler, knownArtifacts);
+    knownNestedSets = new KnownNestedSets(aqueryOutputHandler, knownArtifacts, deduplicateDepsets);
     knownAspectDescriptors = new KnownAspectDescriptors(aqueryOutputHandler);
     knownTargets = new KnownTargets(aqueryOutputHandler, knownRuleClassStrings);
   }
@@ -203,6 +204,9 @@ public class ActionGraphDump {
     if (actionOwner != null) {
       BuildEvent event = actionOwner.getConfiguration();
       actionBuilder.setConfigurationId(knownConfigurations.dataToIdAndStreamOutputProto(event));
+      if (actionOwner.getExecutionPlatform() != null) {
+        actionBuilder.setExecutionPlatform(actionOwner.getExecutionPlatform().label().toString());
+      }
 
       // Store aspects.
       // Iterate through the aspect path and dump the aspect descriptors.
@@ -245,7 +249,7 @@ public class ActionGraphDump {
     }
   }
 
-  public void dumpConfiguredTarget(ConfiguredTargetValue configuredTargetValue)
+  public void dumpConfiguredTarget(RuleConfiguredTargetValue configuredTargetValue)
       throws CommandLineExpansionException, InterruptedException, IOException {
     ConfiguredTarget configuredTarget = configuredTargetValue.getConfiguredTarget();
     if (!includeInActionGraph(configuredTarget.getLabel().toString())) {

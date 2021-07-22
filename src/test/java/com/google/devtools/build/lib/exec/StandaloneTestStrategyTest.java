@@ -37,6 +37,8 @@ import com.google.devtools.build.lib.actions.SpawnContinuation;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.SpawnStrategy;
+import com.google.devtools.build.lib.actions.ThreadStateReceiver;
+import com.google.devtools.build.lib.actions.cache.MetadataHandler;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.test.TestActionContext;
@@ -68,6 +70,7 @@ import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.UnixGlob;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import com.google.devtools.common.options.Options;
@@ -128,17 +131,19 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
 
     public FakeActionExecutionContext(
         FileOutErr fileOutErr, SpawnStrategy spawnStrategy, BinTools binTools) {
-      this(fileOutErr, toContextRegistry(spawnStrategy, binTools, fileSystem, directories));
+      this(fileOutErr, toContextRegistry(spawnStrategy, binTools, fileSystem, directories), null);
     }
 
     public FakeActionExecutionContext(
-        FileOutErr fileOutErr, ActionContext.ActionContextRegistry actionContextRegistry) {
+        FileOutErr fileOutErr,
+        ActionContext.ActionContextRegistry actionContextRegistry,
+        MetadataHandler metadataHandler) {
       super(
           /*executor=*/ null,
           /*actionInputFileCache=*/ null,
           ActionInputPrefetcher.NONE,
           new ActionKeyContext(),
-          /*metadataHandler=*/ null,
+          /*metadataHandler=*/ metadataHandler,
           /*rewindingEnabled=*/ false,
           LostInputsCheck.NONE,
           fileOutErr,
@@ -148,7 +153,9 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
           /*artifactExpander=*/ null,
           /*actionFileSystem=*/ null,
           /*skyframeDepsResult=*/ null,
-          NestedSetExpander.DEFAULT);
+          NestedSetExpander.DEFAULT,
+          UnixGlob.DEFAULT_SYSCALLS,
+          ThreadStateReceiver.NULL_INSTANCE);
       this.actionContextRegistry = actionContextRegistry;
     }
 
@@ -175,7 +182,14 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
 
     @Override
     public ActionExecutionContext withFileOutErr(FileOutErr fileOutErr) {
-      return new FakeActionExecutionContext(fileOutErr, actionContextRegistry);
+      return new FakeActionExecutionContext(
+          fileOutErr, actionContextRegistry, getMetadataHandler());
+    }
+
+    @Override
+    public ActionExecutionContext withMetadataHandler(MetadataHandler metadataHandler) {
+      return new FakeActionExecutionContext(
+          getFileOutErr(), actionContextRegistry, metadataHandler);
     }
   }
 

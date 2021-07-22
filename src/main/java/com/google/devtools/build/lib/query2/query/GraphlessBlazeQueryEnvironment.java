@@ -256,38 +256,61 @@ public class GraphlessBlazeQueryEnvironment extends AbstractBlazeQueryEnvironmen
   public void somePath(
       Iterable<Target> from, Iterable<Target> to, QueryExpression caller, Callback<Target> callback)
       throws InterruptedException, QueryException {
-    try {
-      callback.process(
-          new PathLabelVisitor(targetProvider, dependencyFilter).somePath(eventHandler, from, to));
-    } catch (NoSuchThingException e) {
-      throw new QueryException(
-          caller, e.getMessage(), e, e.getDetailedExitCode().getFailureDetail());
+    try (SilentCloseable closeable = Profiler.instance().profile("preloadTransitiveClosure")) {
+      preloadTransitiveClosure(from, /*maxDepth=*/ Integer.MAX_VALUE);
     }
+    Iterable<Target> results =
+        new PathLabelVisitor(targetProvider, dependencyFilter, errorObserver)
+            .somePath(eventHandler, from, to);
+    if (errorObserver.hasErrors()) {
+      handleError(
+          caller,
+          "errors were encountered while computing transitive closure",
+          errorObserver.getDetailedExitCode());
+    }
+    callback.process(results);
   }
 
   @Override
   public void allPaths(
       Iterable<Target> from, Iterable<Target> to, QueryExpression caller, Callback<Target> callback)
       throws InterruptedException, QueryException {
-    try {
-      callback.process(
-          new PathLabelVisitor(targetProvider, dependencyFilter).allPaths(eventHandler, from, to));
-    } catch (NoSuchThingException e) {
-      throw new QueryException(caller, e.getMessage(), e.getDetailedExitCode().getFailureDetail());
+    try (SilentCloseable closeable = Profiler.instance().profile("preloadTransitiveClosure")) {
+      preloadTransitiveClosure(from, /*maxDepth=*/ Integer.MAX_VALUE);
     }
+    Iterable<Target> results =
+        new PathLabelVisitor(targetProvider, dependencyFilter, errorObserver)
+            .allPaths(eventHandler, from, to);
+    if (errorObserver.hasErrors()) {
+      handleError(
+          caller,
+          "errors were encountered while computing transitive closure",
+          errorObserver.getDetailedExitCode());
+    }
+    callback.process(results);
   }
 
   @Override
   public void samePkgDirectRdeps(
       Iterable<Target> from, QueryExpression caller, Callback<Target> callback)
       throws InterruptedException, QueryException {
-    try {
-      callback.process(
-          new PathLabelVisitor(targetProvider, dependencyFilter)
-              .samePkgDirectRdeps(eventHandler, from));
-    } catch (NoSuchThingException e) {
-      throw new QueryException(caller, e.getMessage(), e.getDetailedExitCode().getFailureDetail());
+    Set<Target> targetsToPreload = new HashSet<>();
+    for (Target t : from) {
+      targetsToPreload.addAll(getSiblingTargetsInPackage(t));
     }
+    try (SilentCloseable closeable = Profiler.instance().profile("preloadTransitiveClosure")) {
+      preloadTransitiveClosure(targetsToPreload, /*maxDepth=*/ 1);
+    }
+    Iterable<Target> results =
+        new PathLabelVisitor(targetProvider, dependencyFilter, errorObserver)
+            .samePkgDirectRdeps(eventHandler, from);
+    if (errorObserver.hasErrors()) {
+      handleError(
+          caller,
+          "errors were encountered while computing transitive closure",
+          errorObserver.getDetailedExitCode());
+    }
+    callback.process(results);
   }
 
   @Override
@@ -298,13 +321,19 @@ public class GraphlessBlazeQueryEnvironment extends AbstractBlazeQueryEnvironmen
       QueryExpression caller,
       Callback<Target> callback)
       throws InterruptedException, QueryException {
-    try {
-      callback.process(
-          new PathLabelVisitor(targetProvider, dependencyFilter)
-              .rdeps(eventHandler, from, universe, maxDepth));
-    } catch (NoSuchThingException e) {
-      throw new QueryException(caller, e.getMessage(), e.getDetailedExitCode().getFailureDetail());
+    try (SilentCloseable closeable = Profiler.instance().profile("preloadTransitiveClosure")) {
+      preloadTransitiveClosure(universe, maxDepth);
     }
+    Iterable<Target> results =
+        new PathLabelVisitor(targetProvider, dependencyFilter, errorObserver)
+            .rdeps(eventHandler, from, universe, maxDepth);
+    if (errorObserver.hasErrors()) {
+      handleError(
+          caller,
+          "errors were encountered while computing transitive closure",
+          errorObserver.getDetailedExitCode());
+    }
+    callback.process(results);
   }
 
   @Override

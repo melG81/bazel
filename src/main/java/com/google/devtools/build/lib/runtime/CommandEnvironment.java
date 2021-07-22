@@ -22,7 +22,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.ResourceManager;
-import com.google.devtools.build.lib.actions.cache.ActionCache;
 import com.google.devtools.build.lib.analysis.AnalysisOptions;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
@@ -55,7 +54,6 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.common.options.OptionsParsingResult;
 import com.google.devtools.common.options.OptionsProvider;
 import com.google.protobuf.Any;
-import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -68,6 +66,7 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -91,6 +90,7 @@ public class CommandEnvironment {
   private final Set<String> visibleActionEnv = new TreeSet<>();
   private final Set<String> visibleTestEnv = new TreeSet<>();
   private final Map<String, String> repoEnv = new TreeMap<>();
+  private final Map<String, String> repoEnvFromOptions = new TreeMap<>();
   private final TimestampGranularityMonitor timestampGranularityMonitor;
   private final Thread commandThread;
   private final Command command;
@@ -102,6 +102,7 @@ public class CommandEnvironment {
   private final long commandStartTime;
   private final ImmutableList<Any> commandExtensions;
   private final ImmutableList.Builder<Any> responseExtensions = ImmutableList.builder();
+  private final Consumer<String> shutdownReasonConsumer;
 
   private OutputService outputService;
   private TopDownActionCache topDownActionCache;
@@ -160,7 +161,8 @@ public class CommandEnvironment {
       List<String> warnings,
       long waitTimeInMs,
       long commandStartTime,
-      List<Any> commandExtensions) {
+      List<Any> commandExtensions,
+      Consumer<String> shutdownReasonConsumer) {
     this.runtime = runtime;
     this.workspace = workspace;
     this.directories = workspace.getDirectories();
@@ -169,6 +171,7 @@ public class CommandEnvironment {
     this.commandThread = commandThread;
     this.command = command;
     this.options = options;
+    this.shutdownReasonConsumer = shutdownReasonConsumer;
     this.blazeModuleEnvironment = new BlazeModuleEnvironment();
     this.timestampGranularityMonitor = new TimestampGranularityMonitor(runtime.getClock());
     // Record the command's starting time again, for use by
@@ -181,7 +184,6 @@ public class CommandEnvironment {
         Preconditions.checkNotNull(
             options.getOptions(CommonCommandOptions.class),
             "CommandEnvironment needs its options provider to have CommonCommandOptions loaded.");
-    Path workspacePath = directories.getWorkspace();
     Path workingDirectory;
     try {
       workingDirectory = computeWorkingDirectory(commandOptions);
@@ -189,7 +191,7 @@ public class CommandEnvironment {
       // We'll exit very soon, but set the working directory to something reasonable so remainder of
       // setup can finish.
       this.blazeModuleEnvironment.exit(e);
-      workingDirectory = workspacePath;
+      workingDirectory = directories.getWorkingDirectory();
     }
     this.workingDirectory = workingDirectory;
     if (getWorkspace() != null) {
@@ -204,12 +206,14 @@ public class CommandEnvironment {
     this.commandExtensions = ImmutableList.copyOf(commandExtensions);
     // If this command supports --package_path we initialize the package locator scoped
     // to the command environment
-    if (commandHasPackageOptions(command) && workspacePath != null) {
+    if (commandHasPackageOptions(command) && directories.getWorkspace() != null) {
       this.packageLocator =
           workspace
               .getSkyframeExecutor()
               .createPackageLocator(
-                  reporter, options.getOptions(PackageOptions.class).packagePath, workingDirectory);
+                  reporter,
+                  options.getOptions(PackageOptions.class).packagePath,
+                  directories.getWorkspace());
     } else {
       this.packageLocator = null;
     }
@@ -222,7 +226,10 @@ public class CommandEnvironment {
 
     this.clientEnv = makeMapFromMapEntries(clientOptions.clientEnv);
     this.commandId = computeCommandId(commandOptions.invocationId, warnings);
-    this.buildRequestId = computeBuildRequestId(commandOptions.buildRequestId, warnings);
+    this.buildRequestId =
+        commandOptions.buildRequestId != null
+            ? commandOptions.buildRequestId
+            : UUID.randomUUID().toString();
 
     this.repoEnv.putAll(clientEnv);
     if (command.builds()) {
@@ -245,17 +252,15 @@ public class CommandEnvironment {
       }
     }
 
-    CoreOptions configOpts = options.getOptions(CoreOptions.class);
-    if (configOpts != null) {
-      for (Map.Entry<String, String> entry : configOpts.repositoryEnvironment) {
-        String name = entry.getKey();
-        String value = entry.getValue();
-        if (value == null) {
-          value = System.getenv(name);
-        }
-        if (value != null) {
-          repoEnv.put(name, value);
-        }
+    for (Map.Entry<String, String> entry : commandOptions.repositoryEnvironment) {
+      String name = entry.getKey();
+      String value = entry.getValue();
+      if (value == null) {
+        value = System.getenv(name);
+      }
+      if (value != null) {
+        repoEnv.put(entry.getKey(), entry.getValue());
+        repoEnvFromOptions.put(entry.getKey(), entry.getValue());
       }
     }
   }
@@ -329,6 +334,12 @@ public class CommandEnvironment {
     return getRuntime().getClock();
   }
 
+  void notifyOnCrash(String message) {
+    shutdownReasonConsumer.accept(message);
+    // Give shutdown hooks priority in JVM and stop generating more data for modules to consume.
+    commandThread.interrupt();
+  }
+
   public OptionsProvider getStartupOptionsProvider() {
     return getRuntime().getStartupOptionsProvider();
   }
@@ -372,7 +383,6 @@ public class CommandEnvironment {
   public Command getCommand() {
     return command;
   }
-
   public String getCommandName() {
     return command.name();
   }
@@ -440,22 +450,6 @@ public class CommandEnvironment {
     return commandId;
   }
 
-  private String computeBuildRequestId(String idFromOptions, List<String> warnings) {
-    String buildRequestId = idFromOptions;
-    if (buildRequestId == null) {
-      String uuidString = clientEnv.getOrDefault("BAZEL_INTERNAL_BUILD_REQUEST_ID", "");
-      if (!uuidString.isEmpty()) {
-        buildRequestId = uuidString;
-        warnings.add(
-            "BAZEL_INTERNAL_BUILD_REQUEST_ID is set. This will soon be deprecated in favor of "
-                + "--build_request_id. Please switch to using the flag.");
-      } else {
-        buildRequestId = UUID.randomUUID().toString();
-      }
-    }
-    return buildRequestId;
-  }
-
   public TimestampGranularityMonitor getTimestampGranularityMonitor() {
     return timestampGranularityMonitor;
   }
@@ -516,7 +510,7 @@ public class CommandEnvironment {
    * Callers should certainly not make this assumption. The Path returned may be null.
    */
   public Path getWorkspace() {
-    return getDirectories().getWorkspace();
+    return getDirectories().getWorkingDirectory();
   }
 
   public String getWorkspaceName() {
@@ -600,10 +594,6 @@ public class CommandEnvironment {
   @Nullable
   public WorkspaceInfoFromDiff getWorkspaceInfoFromDiff() {
     return workspaceInfoFromDiff;
-  }
-
-  public ActionCache getPersistentActionCache() throws IOException {
-    return workspace.getPersistentActionCache(reporter);
   }
 
   /** Returns the top-down action cache to use, or null. */
@@ -709,6 +699,7 @@ public class CommandEnvironment {
                 options.getOptions(BuildLanguageOptions.class),
                 getCommandId(),
                 clientEnv,
+                repoEnvFromOptions,
                 timestampGranularityMonitor,
                 options);
   }

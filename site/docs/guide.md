@@ -120,7 +120,7 @@ these are known as _target patterns_. This syntax is used in commands like
 `build`, `test`, or `query`.
 
 Whereas [labels](build-ref.html#labels) are used to specify individual targets,
-e.g. for declaring dependencies in BUILD files, Bazel's target patterns are a
+e.g. for declaring dependencies in `BUILD` files, Bazel's target patterns are a
 syntax for specifying multiple targets: they are a generalization of the label
 syntax for _sets_ of targets, using wildcards. In the simplest case, any valid
 label is also a valid target pattern, identifying a set of exactly one target.
@@ -139,15 +139,15 @@ workspace.
 </tr>
 <tr>
   <td><code>//foo/bar:all</code></td>
-  <td>All rules in the package <code>foo/bar</code>.</td>
+  <td>All rule targets in the package <code>foo/bar</code>.</td>
 </tr>
 <tr>
   <td><code>//foo/...</code></td>
-  <td>All rules in all packages beneath the directory <code>foo</code>.</td>
+  <td>All rule targets in all packages beneath the directory <code>foo</code>.</td>
 </tr>
 <tr>
   <td><code>//foo/...:all</code></td>
-  <td>All rules in all packages beneath the directory <code>foo</code>.</td>
+  <td>All rule targets in all packages beneath the directory <code>foo</code>.</td>
 </tr>
 <tr>
   <td><code>//foo/...:*</code></td>
@@ -156,6 +156,16 @@ workspace.
 <tr>
   <td><code>//foo/...:all-targets</code></td>
   <td>All targets (rules and files) in all packages beneath the directory <code>foo</code>.</td>
+</tr>
+<tr>
+  <td><code>//...</code></td>
+  <td>All targets in packages in the workspace. This does not include targets
+  from <a href="external.html">external repositories</a>.</td>
+</tr>
+<tr>
+  <td><code>//:all</code></td>
+  <td>All targets in the top-level package, if there is a `BUILD` file at the
+  root of the workspace.</td>
 </tr>
 </table>
 
@@ -253,10 +263,13 @@ that weren't subtracted. For example, if there were a target `//foo:all-apis`
 that among others depended on `//foo/bar:api`, then the latter would be built as
 part of building the former.
 
-Targets with `tags = ["manual"]` will not be included in wildcard target
-patterns (`...`, `:*`, `:all`, etc.). You should specify such test targets with
-explicit target patterns on the command line if you want Bazel to build/test
-them.
+Targets with `tags = ["manual"]` are not included in wildcard target patterns
+(`...`, `:*`, `:all`, etc.) when specified in commands like
+<code>bazel build</code> and <code>bazel test</code>; you should specify such
+test targets with explicit target patterns on the command line if you want Bazel
+to build/test them. In contrast, <code>bazel query</code> doesn't perform any
+such filtering automatically (that would defeat the purpose of
+<code>bazel query</code>).
 
 <a id="fetch"></a>
 ### Fetching external dependencies
@@ -336,7 +349,7 @@ The primary difference is that the distribution directory requires manual
 preparation.
 
 Using the
-[`--distdir=/path/to-directory`](https://docs.bazel.build/versions/master/command-line-reference.html#flag--distdir)
+[`--distdir=/path/to-directory`](https://docs.bazel.build/versions/main/command-line-reference.html#flag--distdir)
 option, you can specify additional read-only directories to look for files
 instead of fetching them. A file is taken from such a directory if the file name
 is equal to the base name of the URL and additionally the hash of the file is
@@ -363,7 +376,7 @@ containing these dependencies on a machine with network access, and then
 transfer them to the airgapped environment with an offline approach.
 
 To prepare the [distribution directory](distribution-files-directories), use the
-[`--distdir`](https://docs.bazel.build/versions/master/command-line-reference.html#flag--distdir)
+[`--distdir`](https://docs.bazel.build/versions/main/command-line-reference.html#flag--distdir)
 flag. You will need to do this once for every new Bazel binary version, since
 the implicit dependencies can be different for every release.
 
@@ -408,7 +421,7 @@ build --distdir=path/to/directory
 
 All the inputs that specify the behavior and result of a given build can be
 divided into two distinct categories. The first kind is the intrinsic
-information stored in the BUILD files of your project: the build rule, the
+information stored in the `BUILD` files of your project: the build rule, the
 values of its attributes, and the complete set of its transitive dependencies.
 The second kind is the external or environmental data, supplied by the user or
 by the build tool: the choice of target architecture, compilation and linking
@@ -776,8 +789,17 @@ before the command (`build`, `test`, etc).
 4.  **The user-specified RC file**, if specified with
     <code>--bazelrc=<var>file</var></code>
 
-    This flag is optional. However, if the flag is specified, then the file must
-    exist.
+    This flag is optional but can also be specified multiple times.
+
+    `/dev/null` indicates that all further `--bazelrc`s will be ignored, which
+     is useful to disable the search for a user rc file, e.g. in release builds.
+
+    For example:
+    ```
+    --bazelrc=x.rc --bazelrc=y.rc --bazelrc=/dev/null --bazelrc=z.rc
+    ```
+    1. `x.rc` and `y.rc` are read.
+    2. `z.rc` is ignored due to the prior `/dev/null`.
 
 In addition to this optional configuration file, Bazel looks for a global rc
 file. For more details, see the [global bazelrc section](#global_bazelrc).
@@ -900,9 +922,10 @@ different rc files. In order to avoid name conflicts, we suggest that configs
 defined in personal rc files start with an underscore (`_`) to avoid
 unintentional name sharing.
 
-`--config=foo` expands to the options defined in the rc files "in-place" so that
-the options specified for the config have the same precedence that the
-`--config=foo` option had.
+`--config=foo` expands to the options defined in
+[the rc files](#where-are-the-bazelrc-files) "in-place" so that the options
+specified for the config have the same precedence that the `--config=foo` option
+had.
 
 This syntax does not extend to the use of `startup` to set
 [startup options](#option-defaults), e.g. setting

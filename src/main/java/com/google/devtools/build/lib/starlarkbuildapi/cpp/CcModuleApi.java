@@ -672,11 +672,15 @@ public interface CcModuleApi<
             allowedTypes = {@ParamType(type = NoneType.class), @ParamType(type = Depset.class)}),
         @Param(
             name = "user_link_flags",
-            doc = "Depset of user link flags passed as strings.",
+            doc = "Depset of user link flags passed as strings. Sequence not accepted for now.",
             positional = false,
             named = true,
             defaultValue = "None",
-            allowedTypes = {@ParamType(type = NoneType.class), @ParamType(type = Depset.class)}),
+            allowedTypes = {
+              @ParamType(type = NoneType.class),
+              @ParamType(type = Depset.class),
+              @ParamType(type = Sequence.class)
+            }),
         @Param(
             name = "additional_inputs",
             doc = "For additional inputs to the linking action, e.g.: linking scripts.",
@@ -684,12 +688,20 @@ public interface CcModuleApi<
             named = true,
             defaultValue = "None",
             allowedTypes = {@ParamType(type = NoneType.class), @ParamType(type = Depset.class)}),
+        @Param(
+            name = "linkstamps",
+            documented = false,
+            positional = false,
+            named = true,
+            defaultValue = "unbound",
+            allowedTypes = {@ParamType(type = NoneType.class), @ParamType(type = Depset.class)}),
       })
   LinkerInputT createLinkerInput(
       Label owner,
       Object librariesToLinkObject,
       Object userLinkFlagsObject,
       Object nonCodeInputs,
+      Object linkstamps,
       StarlarkThread thread)
       throws EvalException, InterruptedException;
 
@@ -859,23 +871,23 @@ public interface CcModuleApi<
             named = true,
             defaultValue = "unbound"),
         @Param(
-            name = "textual_hdrs",
+            name = "direct_textual_headers",
             documented = false,
             positional = false,
             named = true,
-            defaultValue = "unbound"),
+            defaultValue = "[]"),
         @Param(
-            name = "modular_public_hdrs",
+            name = "direct_public_headers",
             documented = false,
             positional = false,
             named = true,
-            defaultValue = "unbound"),
+            defaultValue = "[]"),
         @Param(
-            name = "modular_private_hdrs",
+            name = "direct_private_headers",
             documented = false,
             positional = false,
             named = true,
-            defaultValue = "unbound"),
+            defaultValue = "[]"),
         @Param(
             name = "purpose",
             documented = false,
@@ -891,9 +903,9 @@ public interface CcModuleApi<
       Object frameworkIncludes,
       Object defines,
       Object localDefines,
-      Object textualHdrs,
-      Object modularPublicHdrs,
-      Object modularPrivateHdrs,
+      Sequence<?> directTextualHdrs,
+      Sequence<?> directPublicHdrs,
+      Sequence<?> directPrivateHdrs,
       Object purpose,
       StarlarkThread thread)
       throws EvalException;
@@ -934,11 +946,7 @@ public interface CcModuleApi<
       name = "is_cc_toolchain_resolution_enabled_do_not_use",
       documented = false,
       parameters = {
-        @Param(
-            name = "ctx",
-            positional = false,
-            named = true,
-            doc = "The rule context."),
+        @Param(name = "ctx", positional = false, named = true, doc = "The rule context."),
       },
       doc = "Returns true if the --incompatible_enable_cc_toolchain_resolution flag is enabled.")
   boolean isCcToolchainResolutionEnabled(StarlarkRuleContextT ruleContext);
@@ -947,11 +955,7 @@ public interface CcModuleApi<
       name = "create_cc_toolchain_config_info",
       doc = "Creates a <code>CcToolchainConfigInfo</code> provider",
       parameters = {
-        @Param(
-            name = "ctx",
-            positional = false,
-            named = true,
-            doc = "The rule context."),
+        @Param(name = "ctx", positional = false, named = true, doc = "The rule context."),
         @Param(
             name = "features",
             positional = false,
@@ -1174,6 +1178,13 @@ public interface CcModuleApi<
             named = true,
             defaultValue = "None",
             allowedTypes = {@ParamType(type = FileApi.class), @ParamType(type = NoneType.class)}),
+        @Param(
+            name = "variables_extension",
+            positional = false,
+            named = true,
+            documented = false,
+            allowedTypes = {@ParamType(type = Dict.class)},
+            defaultValue = "unbound"),
       })
   Tuple createLinkingContextFromCompilationOutputs(
       StarlarkActionFactoryT starlarkActionFactoryApi,
@@ -1189,6 +1200,7 @@ public interface CcModuleApi<
       boolean disallowStaticLibraries,
       boolean disallowDynamicLibraries,
       Object grepIncludes,
+      Object variablesExtension,
       StarlarkThread thread)
       throws InterruptedException, EvalException;
 
@@ -1257,8 +1269,19 @@ public interface CcModuleApi<
       throws EvalException;
 
   @StarlarkMethod(
-      name = "get_CcNativeLibraryProvider",
-      documented = false,
-      useStarlarkThread = true)
-  Object getCcNativeLibraryProvider(StarlarkThread thread) throws EvalException;
+      name = "merge_compilation_contexts",
+      doc = "Merges multiple <code>CompilationContexts</code>s into one.",
+      parameters = {
+        @Param(
+            name = "compilation_contexts",
+            doc =
+                "List of <code>CompilationContexts</code>s to be merged. The headers of each "
+                    + "context will be exported by the direct fields in the returned provider.",
+            positional = false,
+            named = true,
+            defaultValue = "[]"),
+      })
+  CompilationContextT mergeCompilationContexts(
+      Sequence<?> compilationContexts) // <CcCompilationContextApi> expected
+      throws EvalException;
 }

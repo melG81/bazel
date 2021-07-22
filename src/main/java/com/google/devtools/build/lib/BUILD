@@ -54,6 +54,7 @@ filegroup(
         "//src/main/java/com/google/devtools/build/lib/dynamic:srcs",
         "//src/main/java/com/google/devtools/build/lib/events:srcs",
         "//src/main/java/com/google/devtools/build/lib/exec:srcs",
+        "//src/main/java/com/google/devtools/build/lib/io:srcs",
         "//src/main/java/com/google/devtools/build/lib/graph:srcs",
         "//src/main/java/com/google/devtools/build/lib/jni:srcs",
         "//src/main/java/com/google/devtools/build/lib/metrics:srcs",
@@ -112,48 +113,6 @@ filegroup(
     ],
 )
 
-########################################################################
-#
-# The "foundation" library (concurrent, events, util, vfs, inmemoryfs, options)
-# Filesystem abstraction, event reporting, options parsing, I/O routines.
-#
-
-# These packages apparently depend on :foundation. I have no idea why, but to
-# avoid breaking them, I allow them to depend on it.
-java_library(
-    name = "foundation",
-    exports = [
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
-        "//src/main/java/com/google/devtools/build/lib/events",
-        "//src/main/java/com/google/devtools/build/lib/util",
-        "//src/main/java/com/google/devtools/build/lib/vfs",
-        "//src/main/java/com/google/devtools/common/options",
-    ],
-)
-
-java_library(
-    name = "syntax",
-    srcs = [],
-    visibility = ["//visibility:public"],
-    exports = [
-        "//src/main/java/net/starlark/java/eval",
-        "//src/main/java/net/starlark/java/syntax",
-    ],
-)
-
-# Deprecated: This target has been moved. Depend on the actual target instead.
-java_library(
-    name = "shared-base-rules",
-    exports = [
-        "//src/main/java/com/google/devtools/build/lib/rules:nativedeps",
-        "//src/main/java/com/google/devtools/build/lib/rules/android",
-        "//src/main/java/com/google/devtools/build/lib/rules/java:java-compilation",
-        "//src/main/java/com/google/devtools/build/lib/rules/java:java-rules",
-        "//src/main/java/com/google/devtools/build/lib/rules/proto",
-        "//src/main/java/com/google/devtools/build/lib/rules/python",
-    ],
-)
-
 java_library(
     name = "build-request-options",
     srcs = ["buildtool/BuildRequestOptions.java"],
@@ -163,6 +122,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/util:resource_converter",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/common/options",
+        "//third_party:caffeine",
         "//third_party:flogger",
         "//third_party:guava",
         "//third_party:jsr305",
@@ -269,6 +229,7 @@ java_library(
         ":runtime/blaze_command_result",
         ":runtime/command_dispatcher",
         "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_data",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
         "//src/main/java/com/google/devtools/build/lib/actions:commandline_item",
         "//src/main/java/com/google/devtools/build/lib/actions:execution_requirements",
@@ -307,7 +268,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/clock",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/cmdline:LabelValidator",
-        "//src/main/java/com/google/devtools/build/lib/collect",
         "//src/main/java/com/google/devtools/build/lib/collect/nestedset",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//src/main/java/com/google/devtools/build/lib/events",
@@ -339,7 +299,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/query2:aquery-utils",
         "//src/main/java/com/google/devtools/build/lib/query2/engine",
         "//src/main/java/com/google/devtools/build/lib/query2/query/output",
-        "//src/main/java/com/google/devtools/build/lib/rules:alias",
         "//src/main/java/com/google/devtools/build/lib/runtime/events",
         "//src/main/java/com/google/devtools/build/lib/server",
         "//src/main/java/com/google/devtools/build/lib/server:pid_file_watcher",
@@ -406,11 +365,13 @@ java_library(
         "//src/main/protobuf:option_filters_java_proto",
         "//src/main/protobuf:test_status_java_proto",
         "//third_party:auto_value",
+        "//third_party:caffeine",
         "//third_party:error_prone_annotations",
         "//third_party:flogger",
         "//third_party:guava",
         "//third_party:jsr305",
         "@com_google_protobuf//:protobuf_java",
+        "@com_google_protobuf//java/util",
     ],
 )
 
@@ -426,28 +387,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/common/options",
-        "//third_party:guava",
-    ],
-)
-
-########################################################################
-#
-# The Blaze query language, revision 2: query2.
-#
-
-java_library(
-    name = "query2",
-    exports = [
-        ":foundation",
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
-        "//src/main/java/com/google/devtools/build/lib/events",
-        "//src/main/java/com/google/devtools/build/lib/graph",
-        "//src/main/java/com/google/devtools/build/lib/packages",
-        "//src/main/java/com/google/devtools/build/lib/query2",
-        "//src/main/java/com/google/devtools/build/lib/util",
-        "//src/main/java/com/google/devtools/build/lib/vfs",
-        "//src/main/java/com/google/devtools/common/options",
-        "//src/main/protobuf:build_java_proto",
         "//third_party:guava",
     ],
 )

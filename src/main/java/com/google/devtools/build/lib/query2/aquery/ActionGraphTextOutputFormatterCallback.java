@@ -29,12 +29,12 @@ import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.analysis.AspectValue;
 import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.actions.ParameterFileWriteAction;
-import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTarget;
 import com.google.devtools.build.lib.buildeventstream.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
+import com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.util.CommandDescriptionForm;
 import com.google.devtools.build.lib.util.CommandFailureUtils;
@@ -79,12 +79,18 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
       options.includeCommandline |= options.includeParamFiles;
 
       for (ConfiguredTargetValue configuredTargetValue : partialResult) {
-        for (ActionAnalysisMetadata action : configuredTargetValue.getActions()) {
+        if (!(configuredTargetValue instanceof RuleConfiguredTargetValue)) {
+          // We have to include non-rule values in the graph to visit their dependencies, but they
+          // don't have any actions to print out.
+          continue;
+        }
+        for (ActionAnalysisMetadata action :
+            ((RuleConfiguredTargetValue) configuredTargetValue).getActions()) {
           writeAction(action, printStream);
         }
         if (options.useAspects) {
-          if (configuredTargetValue.getConfiguredTarget() instanceof RuleConfiguredTarget) {
-            for (AspectValue aspectValue : accessor.getAspectValues(configuredTargetValue)) {
+          for (AspectValue aspectValue : accessor.getAspectValues(configuredTargetValue)) {
+            if (aspectValue != null) {
               for (ActionAnalysisMetadata action : aspectValue.getActions()) {
                 writeAction(action, printStream);
               }
@@ -133,6 +139,12 @@ class ActionGraphTextOutputFormatterCallback extends AqueryThreadsafeCallback {
           .append("  Configuration: ")
           .append(configProto.getMnemonic())
           .append('\n');
+      if (actionOwner.getExecutionPlatform() != null) {
+        stringBuilder
+            .append("  Execution platform: ")
+            .append(actionOwner.getExecutionPlatform().label().toString())
+            .append("\n");
+      }
 
       // In the case of aspect-on-aspect, AspectDescriptors are listed in
       // topological order of the dependency graph.

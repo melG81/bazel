@@ -28,6 +28,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.Executor;
+import com.google.devtools.build.lib.actions.ThreadStateReceiver;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
@@ -41,6 +42,7 @@ import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.UnixGlob;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.Before;
@@ -206,7 +208,9 @@ public class TemplateExpansionActionTest extends FoundationTestCase {
         /*artifactExpander=*/ null,
         /*actionFileSystem=*/ null,
         /*skyframeDepsResult=*/ null,
-        NestedSetExpander.DEFAULT);
+        NestedSetExpander.DEFAULT,
+        UnixGlob.DEFAULT_SYSCALLS,
+        ThreadStateReceiver.NULL_INSTANCE);
   }
 
   private void executeTemplateExpansion(String expected) throws Exception {

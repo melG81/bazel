@@ -467,6 +467,54 @@ EOF
       && fail "Expected failure" || true
 }
 
+function test_local_fallback_if_no_remote_executor() {
+  # Test that when manually set --spawn_strategy that includes remote, but remote_executor isn't set, we ignore
+  # the remote strategy rather than reporting an error. See https://github.com/bazelbuild/bazel/issues/13340.
+  mkdir -p gen1
+  cat > gen1/BUILD <<'EOF'
+genrule(
+name = "gen1",
+srcs = [],
+outs = ["out1"],
+cmd = "touch \"$@\"",
+)
+EOF
+
+  bazel build \
+      --spawn_strategy=remote,local \
+      --build_event_text_file=gen1.log \
+      //gen1 >& $TEST_log \
+      || fail "Expected success"
+
+  mv gen1.log $TEST_log
+  expect_log "2 processes: 1 internal, 1 local"
+}
+
+function test_local_fallback_if_remote_executor_unavailable() {
+  # Test that when --remote_local_fallback is set and remote_executor is unavailable when build starts, we fallback to
+  # local strategy. See https://github.com/bazelbuild/bazel/issues/13487.
+  mkdir -p gen1
+  cat > gen1/BUILD <<'EOF'
+genrule(
+name = "gen1",
+srcs = [],
+outs = ["out1"],
+cmd = "touch \"$@\"",
+)
+EOF
+
+  bazel build \
+      --spawn_strategy=remote,local \
+      --remote_executor=grpc://noexist.invalid \
+      --remote_local_fallback \
+      --build_event_text_file=gen1.log \
+      //gen1 >& $TEST_log \
+      || fail "Expected success"
+
+  mv gen1.log $TEST_log
+  expect_log "2 processes: 1 internal, 1 local"
+}
+
 function is_file_uploaded() {
   h=$(shasum -a256 < $1)
   if [ -e "$cas_path/${h:0:64}" ]; then return 0; else return 1; fi
@@ -1011,8 +1059,8 @@ EOF
   [[ $(< ${localtxt}) == "remotelocal" ]] \
   || fail "Unexpected contents in " ${localtxt} ": " $(< ${localtxt})
 
-  (! [[ -f bazel-bin/a/remote.txt ]]) \
-  || fail "Expected bazel-bin/a/remote.txt to have been deleted again"
+  [[ -f bazel-bin/a/remote.txt ]] \
+  || fail "Expected bazel-bin/a/remote.txt to be downloaded"
 }
 
 function test_download_outputs_invalidation() {
@@ -1105,8 +1153,8 @@ EOF
   [[ $(< ${outtxt}) == "Hello buchgr!" ]] \
   || fail "Unexpected contents in "${outtxt}":" $(< ${outtxt})
 
-  (! [[ -f bazel-bin/a/template.txt ]]) \
-  || fail "Expected bazel-bin/a/template.txt to have been deleted again"
+  [[ -f bazel-bin/a/template.txt ]] \
+  || fail "Expected bazel-bin/a/template.txt to be downloaded"
 }
 
 function test_downloads_toplevel() {
@@ -2194,26 +2242,70 @@ EOF
     @local_foo//:all
 }
 
-function test_remote_input_files_executable_bit() {
-  # Test that input files uploaded to remote executor have the same executable bit with local files. #12818
+function test_remote_cache_intermediate_outputs() {
+  # test that remote cache is hit when intermediate output is not executable
   touch WORKSPACE
   cat > BUILD <<'EOF'
 genrule(
+  name = "dep",
+  srcs = [],
+  outs = ["dep"],
+  cmd = "echo 'dep' > $@",
+)
+
+genrule(
   name = "test",
-  srcs = ["foo.txt", "bar.sh"],
-  outs = ["out.txt"],
-  cmd = "ls -l $(SRCS); touch $@",
+  srcs = [":dep"],
+  outs = ["out"],
+  cmd = "cat $(SRCS) > $@",
 )
 EOF
-  touch foo.txt bar.sh
-  chmod a+x bar.sh
 
   bazel build \
-    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_cache=grpc://localhost:${worker_port} \
     //:test >& $TEST_log || fail "Failed to build //:test"
 
-  expect_log "-rwxr--r-- .* bar.sh"
-  expect_log "-rw-r--r-- .* foo.txt"
+  bazel clean
+
+  bazel build \
+    --remote_cache=grpc://localhost:${worker_port} \
+    //:test >& $TEST_log || fail "Failed to build //:test"
+
+  expect_log "2 remote cache hit"
+}
+
+function test_remote_cache_intermediate_outputs_toplevel() {
+  # test that remote cache is hit when intermediate output is not executable in remote download toplevel mode
+  touch WORKSPACE
+  cat > BUILD <<'EOF'
+genrule(
+  name = "dep",
+  srcs = [],
+  outs = ["dep"],
+  cmd = "echo 'dep' > $@",
+)
+
+genrule(
+  name = "test",
+  srcs = [":dep"],
+  outs = ["out"],
+  cmd = "cat $(SRCS) > $@",
+)
+EOF
+
+  bazel build \
+    --remote_cache=grpc://localhost:${worker_port} \
+    --remote_download_toplevel \
+    //:test >& $TEST_log || fail "Failed to build //:test"
+
+  bazel clean
+
+  bazel build \
+    --remote_cache=grpc://localhost:${worker_port} \
+    --remote_download_toplevel \
+    //:test >& $TEST_log || fail "Failed to build //:test"
+
+  expect_log "2 remote cache hit"
 }
 
 function test_exclusive_tag() {
@@ -2343,7 +2435,7 @@ EOF
 # because the coverage post-processing tool escaped the sandbox to find its own
 # runfiles. The error we would see here without the flag would be "Cannot find
 # runfiles". See #4685.
-function test_rbe_coverage_produces_report() {
+function test_java_rbe_coverage_produces_report() {
   mkdir -p java/factorial
 
   JAVA_TOOLS_ZIP="released"
@@ -2424,6 +2516,184 @@ LF:2
 end_of_record"
 
   assert_equals "$expected_result" "$(cat bazel-testlogs/java/factorial/fact-test/coverage.dat)"
+}
+
+# Runs coverage with `cc_test` and RE then checks the coverage file is returned.
+# Older versions of gcov are not supported with bazel coverage and so will be skipped.
+# See the above `test_java_rbe_coverage_produces_report` for more information.
+function test_cc_rbe_coverage_produces_report() {
+  if [[ "$PLATFORM" == "darwin" ]]; then
+    # TODO(b/37355380): This test is disabled due to RemoteWorker not supporting
+    # setting SDKROOT and DEVELOPER_DIR appropriately, as is required of
+    # action executors in order to select the appropriate Xcode toolchain.
+    return 0
+  fi
+
+  # Check to see if intermediate files are supported, otherwise skip.
+  gcov --help | grep "\-i," || return 0
+
+  local test_dir="a/cc/coverage_test"
+  mkdir -p $test_dir
+
+  cat > "$test_dir"/BUILD <<'EOF'
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "hello-lib",
+    srcs = ["hello-lib.cc"],
+    hdrs = ["hello-lib.h"],
+)
+
+cc_binary(
+    name = "hello-world",
+    srcs = ["hello-world.cc"],
+    deps = [":hello-lib"],
+)
+
+cc_test(
+    name = "hello-test",
+    srcs = ["hello-world.cc"],
+    deps = [":hello-lib"],
+)
+
+EOF
+
+  cat > "$test_dir"/hello-lib.cc <<'EOF'
+#include "hello-lib.h"
+
+#include <iostream>
+
+using std::cout;
+using std::endl;
+using std::string;
+
+namespace hello {
+
+HelloLib::HelloLib(const string& greeting) : greeting_(new string(greeting)) {
+}
+
+void HelloLib::greet(const string& thing) {
+  cout << *greeting_ << " " << thing << endl;
+}
+
+}  // namespace hello
+
+EOF
+
+  cat > "$test_dir"/hello-lib.h <<'EOF'
+#ifndef HELLO_LIB_H_
+#define HELLO_LIB_H_
+
+#include <string>
+#include <memory>
+
+namespace hello {
+
+class HelloLib {
+ public:
+  explicit HelloLib(const std::string &greeting);
+
+  void greet(const std::string &thing);
+
+ private:
+  std::unique_ptr<const std::string> greeting_;
+};
+
+}  // namespace hello
+
+#endif  // HELLO_LIB_H_
+
+EOF
+
+  cat > "$test_dir"/hello-world.cc <<'EOF'
+#include "hello-lib.h"
+
+#include <string>
+
+using hello::HelloLib;
+using std::string;
+
+int main(int argc, char** argv) {
+  HelloLib lib("Hello");
+  string thing = "world";
+  if (argc > 1) {
+    thing = argv[1];
+  }
+  lib.greet(thing);
+  return 0;
+}
+
+EOF
+
+  bazel coverage \
+      --test_output=all \
+      --experimental_fetch_all_coverage_outputs \
+      --experimental_split_coverage_postprocessing \
+      --spawn_strategy=remote \
+      --remote_executor=grpc://localhost:${worker_port} \
+      //"$test_dir":hello-test >& $TEST_log \
+      || fail "Failed to run coverage for cc_test"
+
+  # Different gcov versions generate different outputs.
+  # Simply check if this is empty or not.
+  if [[ ! -s bazel-testlogs/a/cc/coverage_test/hello-test/coverage.dat ]]; then
+    echo "Coverage is empty. Failing now."
+    return 1
+  fi
+}
+
+# Test that when testing with --remote_download_minimal, Bazel doesn't
+# regenerate the test.xml if the action actually produced it. See
+# https://github.com/bazelbuild/bazel/issues/12554
+function test_remote_download_minimal_with_test_xml_generation() {
+  mkdir -p a
+
+  cat > a/BUILD <<'EOF'
+sh_test(
+    name = "test0",
+    srcs = ["test.sh"],
+)
+
+java_test(
+    name = "test1",
+    srcs = ["JavaTest.java"],
+    test_class = "JavaTest",
+)
+EOF
+
+  cat > a/test.sh <<'EOF'
+#!/bin/bash
+echo 'Hello'
+EOF
+  chmod a+x a/test.sh
+
+  cat > a/JavaTest.java <<'EOF'
+import org.junit.Test;
+
+public class JavaTest {
+    @Test
+    public void test() {}
+}
+EOF
+
+  bazel build \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_minimal \
+    //a:test0 //a:test1 >& $TEST_log || fail "Failed to build"
+
+  bazel test \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_minimal \
+    //a:test0 >& $TEST_log || fail "Failed to test"
+  # 2 remote spawns: 1 for executing the test, 1 for generating the test.xml
+  expect_log "2 processes: 2 remote"
+
+  bazel test \
+    --remote_executor=grpc://localhost:${worker_port} \
+    --remote_download_minimal \
+    //a:test1 >& $TEST_log || fail "Failed to test"
+  # only 1 remote spawn: test.xml is generated by junit
+  expect_log "2 processes: 1 internal, 1 remote"
 }
 
 run_suite "Remote execution and remote cache tests"

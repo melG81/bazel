@@ -277,7 +277,7 @@ public final class PyCommon {
           && semantics.prohibitHyphensInPackagePaths()
           && Util.containsHyphen(src.getLabel().getPackageFragment())
           // It's ok to have hyphens in main file - usually no one imports it.
-          && !src.getLabel().equals(mainArtifact.getOwnerLabel())) {
+          && (mainArtifact == null || !src.getLabel().equals(mainArtifact.getOwnerLabel()))) {
         ruleContext.attributeError(
             "srcs",
             src.getLabel()
@@ -592,8 +592,7 @@ public final class PyCommon {
             + ": "
             + "This target is being built for Python %s but (transitively) includes Python %s-only "
             + "sources. You can get diagnostic information about which dependencies introduce this "
-            + "version requirement by running the `find_requirements` aspect. If this is used in a "
-            + "genrule, you may need to migrate from tools to exec_tools. For more info see "
+            + "version requirement by running the `find_requirements` aspect. For more info see "
             + "the documentation for the `srcs_version` attribute: "
             + semantics.getSrcsVersionDocURL();
 

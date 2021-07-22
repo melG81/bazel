@@ -25,11 +25,11 @@ import static com.google.devtools.build.lib.packages.Type.STRING_LIST_DICT;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
+import com.google.devtools.build.lib.analysis.PackageSpecificationProvider;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.analysis.config.ExecutionTransitionFactory;
 import com.google.devtools.build.lib.analysis.config.transitions.NoTransition;
-import com.google.devtools.build.lib.analysis.platform.ToolchainInfo;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import java.util.List;
@@ -51,6 +51,7 @@ public final class JavaToolchainRule<C extends JavaToolchain> implements RuleDef
   public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
     return builder
         .requiresConfigurationFragments(JavaConfiguration.class)
+        .advertiseStarlarkProvider(JavaToolchainProvider.PROVIDER.id())
         /* <!-- #BLAZE_RULE(java_plugin).ATTRIBUTE(output_licenses) -->
         See <a href="${link common-definitions#binary.output_licenses}"><code>common attributes
         </code></a>
@@ -292,8 +293,8 @@ public final class JavaToolchainRule<C extends JavaToolchain> implements RuleDef
             attr("java_runtime", LABEL)
                 .cfg(ExecutionTransitionFactory.create())
                 .mandatory()
-                .mandatoryProviders(ToolchainInfo.PROVIDER.id())
-                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .mandatoryProviders(JavaRuntimeInfo.PROVIDER.id())
+                .allowedFileTypes(FileTypeSet.NO_FILE)
                 .useOutputLicenses())
         /* <!-- #BLAZE_RULE(java_toolchain).ATTRIBUTE(android_lint_runner) -->
         Label of the Android Lint runner, if any.
@@ -327,6 +328,34 @@ public final class JavaToolchainRule<C extends JavaToolchain> implements RuleDef
                 .cfg(ExecutionTransitionFactory.create())
                 .mandatoryBuiltinProviders(
                     ImmutableList.of(JavaPackageConfigurationProvider.class)))
+        .add(attr("jspecify_processor_class", STRING).value("").undocumented("experimental"))
+        .add(
+            attr("jspecify_processor", LABEL)
+                .cfg(ExecutionTransitionFactory.create())
+                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .exec()
+                .undocumented("experimental"))
+        .add(
+            attr("jspecify_implicit_deps", LABEL)
+                .cfg(ExecutionTransitionFactory.create())
+                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .exec()
+                .undocumented("experimental"))
+        .add(
+            attr("jspecify_javacopts", STRING_LIST)
+                .value(ImmutableList.<String>of())
+                .undocumented("experimental"))
+        .add(
+            attr("jspecify_stubs", LABEL_LIST)
+                .cfg(ExecutionTransitionFactory.create())
+                .allowedFileTypes(FileTypeSet.ANY_FILE)
+                .undocumented("experimental"))
+        .add(
+            attr("jspecify_packages", LABEL_LIST)
+                .cfg(ExecutionTransitionFactory.create())
+                .allowedFileTypes()
+                .mandatoryBuiltinProviders(ImmutableList.of(PackageSpecificationProvider.class))
+                .undocumented("experimental"))
         .build();
   }
 

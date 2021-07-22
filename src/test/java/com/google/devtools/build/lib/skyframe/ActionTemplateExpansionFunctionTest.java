@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupValue;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionTemplate;
 import com.google.devtools.build.lib.actions.Actions;
@@ -39,14 +40,13 @@ import com.google.devtools.build.lib.actions.ArtifactOwner;
 import com.google.devtools.build.lib.actions.ArtifactPrefixConflictException;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
 import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
+import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.MiddlemanType;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.actions.util.InjectedActionLookupKey;
 import com.google.devtools.build.lib.actions.util.TestAction.DummyAction;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate;
 import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate.OutputPathMapper;
@@ -68,6 +68,7 @@ import com.google.devtools.build.skyframe.SequentialBuildDriver;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -77,7 +78,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.mockito.Mockito;
 
 /** Tests for {@link ActionTemplateExpansionFunction}. */
 @RunWith(JUnit4.class)
@@ -342,7 +342,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
   private static final ActionLookupKey CTKEY = new InjectedActionLookupKey("key");
 
   private ImmutableList<Action> evaluate(ActionTemplate<?> actionTemplate) throws Exception {
-    ConfiguredTargetValue ctValue = createConfiguredTargetValue(actionTemplate);
+    ActionLookupValue ctValue = createActionLookupValue(actionTemplate);
 
     differencer.inject(CTKEY, ctValue);
     ActionTemplateExpansionKey templateKey = ActionTemplateExpansionValue.key(CTKEY, 0);
@@ -365,12 +365,9 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     return actionList.build();
   }
 
-  private static ConfiguredTargetValue createConfiguredTargetValue(
-      ActionTemplate<?> actionTemplate) {
-    return new NonRuleConfiguredTargetValue(
-        Mockito.mock(ConfiguredTarget.class),
-        Actions.GeneratingActions.fromSingleAction(actionTemplate, CTKEY),
-        NestedSetBuilder.emptySet(Order.STABLE_ORDER));
+  private static ActionLookupValue createActionLookupValue(ActionTemplate<?> actionTemplate) {
+    return new BasicActionLookupValue(
+        Actions.GeneratingActions.fromSingleAction(actionTemplate, CTKEY));
   }
 
   private SpecialArtifact createTreeArtifact(String path) {
@@ -484,7 +481,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     }
 
     @Override
-    public Iterable<String> getClientEnvironmentVariables() {
+    public Collection<String> getClientEnvironmentVariables() {
       return ImmutableList.of();
     }
 

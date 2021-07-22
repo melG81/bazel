@@ -30,7 +30,6 @@ import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
-import com.google.devtools.common.options.TriState;
 import java.util.List;
 import java.util.Map;
 
@@ -175,15 +174,6 @@ public class JavaOptions extends FragmentOptions {
               + "but error messages can be different.")
   public boolean useIjars;
 
-  @Deprecated
-  @Option(
-      name = "use_src_ijars",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public boolean useSourceIjars;
-
   @Option(
       name = "java_header_compilation",
       defaultValue = "true",
@@ -192,16 +182,6 @@ public class JavaOptions extends FragmentOptions {
       help = "Compile ijars directly from source.",
       oldName = "experimental_java_header_compilation")
   public boolean headerCompilation;
-
-  // TODO(cushon): delete flag after removing from global .blazerc
-  @Deprecated
-  @Option(
-      name = "experimental_optimize_header_compilation_annotation_processing",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "This flag is a noop and scheduled for removal.")
-  public boolean optimizeHeaderCompilationAnnotationProcessing;
 
   @Option(
       name = "java_deps",
@@ -292,62 +272,6 @@ public class JavaOptions extends FragmentOptions {
   public boolean explicitJavaTestDeps;
 
   @Option(
-      name = "javabuilder_top",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String javaBuilderTop;
-
-  @Option(
-      name = "singlejar_top",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String singleJarTop;
-
-  @Option(
-      name = "genclass_top",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String genClassTop;
-
-  @Option(
-      name = "ijar_top",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String iJarTop;
-
-  @Option(
-      name = "java_langtools",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String javaLangtoolsJar;
-
-  @Option(
-      name = "javac_bootclasspath",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String javacBootclasspath;
-
-  @Option(
-      name = "javac_extdir",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public String javacExtdir;
-
-  @Option(
       name = "host_java_launcher",
       defaultValue = "null",
       converter = EmptyToNullLabelConverter.class,
@@ -428,35 +352,6 @@ public class JavaOptions extends FragmentOptions {
   public boolean enforceProguardFileExtension;
 
   @Option(
-      name = "translations",
-      defaultValue = "auto",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "Translate Java messages; bundle all translations into the jar "
-              + "for each affected rule.")
-  public TriState bundleTranslations;
-
-  @Option(
-      name = "message_translations",
-      defaultValue = "null",
-      allowMultiple = true,
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "The message translations used for translating messages in Java targets.")
-  public List<String> translationTargets;
-
-  @Deprecated
-  @Option(
-      name = "check_constraint",
-      allowMultiple = true,
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "No-op. Kept here for backwards compatibility.")
-  public List<String> checkedConstraints;
-
-  @Option(
       name = "java_optimization_mode",
       defaultValue = "",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
@@ -493,20 +388,6 @@ public class JavaOptions extends FragmentOptions {
           "If set, any java_proto_library or java_mutable_proto_library which sets the "
               + "strict_deps attribute explicitly will fail to build.")
   public boolean isDisallowStrictDepsForJpl;
-
-  @Option(
-      name = "incompatible_disallow_strict_deps_for_jlpl",
-      defaultValue = "true",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.BUILD_FILE_SEMANTICS, OptionEffectTag.EAGERNESS_TO_EXIT},
-      metadataTags = {
-        OptionMetadataTag.INCOMPATIBLE_CHANGE,
-        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
-      },
-      help =
-          "If set, any java_lite_proto_library which sets the strict_deps attribute explicitly will"
-              + "fail to build.")
-  public boolean isDisallowStrictDepsForJlpl;
 
   @Option(
       name = "experimental_one_version_enforcement",
@@ -589,17 +470,6 @@ public class JavaOptions extends FragmentOptions {
       help = "Roll-out flag for making java_proto_library propagate CcLinkParamsStore. DO NOT USE.")
   public boolean jplPropagateCcLinkParamsStore;
 
-  @Option(
-      name = "experimental_jlpl_enforce_strict_deps",
-      defaultValue = "true",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
-      help =
-          "Turns on strict deps for all java_lite_proto_libraries even if they set strict_deps=0"
-              + " unless the java_library package disables the feature jpl_strict_deps."
-              + " Used for java_lite_proto_library.strict_deps migration.")
-  public boolean isJlplStrictDepsEnforced;
-
   // Plugins are built using the host config. To avoid cycles we just don't propagate
   // this option to the host config. If one day we decide to use plugins when building
   // host tools, we can improve this by (for example) creating a compiler configuration that is
@@ -676,7 +546,7 @@ public class JavaOptions extends FragmentOptions {
   public String hostJavaLanguageVersion;
 
   @Option(
-      name = "incompatible_dont_collect_so_artifacts",
+      name = "incompatible_dont_collect_native_libraries_in_data",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
       effectTags = {OptionEffectTag.UNKNOWN},
@@ -684,10 +554,28 @@ public class JavaOptions extends FragmentOptions {
         OptionMetadataTag.INCOMPATIBLE_CHANGE,
         OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
       },
-      help =
-          "Disables collection of .so libraries as artifact (produced by filegroup or genrule); "
-              + " depend on cc_binary or cc_library directly.")
-  public boolean dontCollectSoArtifacts;
+      help = "This flag is a noop and scheduled for removal.")
+  public boolean dontCollectDataLibraries;
+
+  @Option(
+      name = "incompatible_require_javaplugininfo_in_javacommon",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help = "When enabled java_common.compile only accepts JavaPluginInfo for plugins.")
+  public boolean requireJavaPluginInfo;
+
+  @Option(
+      name = "experimental_enable_jspecify",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help = "Enable experimental jspecify integration.")
+  public boolean experimentalEnableJspecify;
 
   Label defaultJavaBase() {
     return Label.parseAbsoluteUnchecked(DEFAULT_JAVABASE);
@@ -747,8 +635,6 @@ public class JavaOptions extends FragmentOptions {
 
     host.jplPropagateCcLinkParamsStore = jplPropagateCcLinkParamsStore;
 
-    host.isJlplStrictDepsEnforced = isJlplStrictDepsEnforced;
-
     host.disallowResourceJars = disallowResourceJars;
 
     host.javaRuntimeVersion = hostJavaRuntimeVersion;
@@ -771,9 +657,8 @@ public class JavaOptions extends FragmentOptions {
 
     host.experimentalTurbineAnnotationProcessing = experimentalTurbineAnnotationProcessing;
 
-    host.dontCollectSoArtifacts = dontCollectSoArtifacts;
+    host.requireJavaPluginInfo = requireJavaPluginInfo;
 
     return host;
   }
-
 }

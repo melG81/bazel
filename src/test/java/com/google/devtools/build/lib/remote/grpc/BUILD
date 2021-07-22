@@ -5,11 +5,13 @@ package(
     default_visibility = ["//src:__subpackages__"],
 )
 
+licenses(["notice"])
+
 filegroup(
     name = "srcs",
     testonly = 0,
     srcs = glob(["**"]),
-    visibility = ["//src/test/java/com/google/devtools/build/lib/remote:__pkg__"],
+    visibility = ["//src:__subpackages__"],
 )
 
 java_test(
@@ -22,6 +24,7 @@ java_test(
     deps = [
         "//src/main/java/com/google/devtools/build/lib/remote/grpc",
         "//src/test/java/com/google/devtools/build/lib:test_runner",
+        "//src/test/java/com/google/devtools/build/lib/remote/util",
         "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",

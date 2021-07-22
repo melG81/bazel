@@ -22,14 +22,12 @@ import static com.google.devtools.build.lib.rules.objc.ObjcProvider.HEADER;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.IMPORTED_LIBRARY;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.J2OBJC_LIBRARY;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.LIBRARY;
-import static com.google.devtools.build.lib.rules.objc.ObjcProvider.LINKED_BINARY;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.LINKOPT;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.LINKSTAMP;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.MODULE_MAP;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.SDK_DYLIB;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.SDK_FRAMEWORK;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.SOURCE;
-import static com.google.devtools.build.lib.rules.objc.ObjcProvider.TOP_LEVEL_MODULE_MAP;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.UMBRELLA_HEADER;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.WEAK_SDK_FRAMEWORK;
 
@@ -41,9 +39,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Streams;
-import com.google.common.collect.UnmodifiableIterator;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
@@ -57,13 +53,15 @@ import com.google.devtools.build.lib.rules.cpp.CcInfo;
 import com.google.devtools.build.lib.rules.cpp.CcLinkingContext;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
 import com.google.devtools.build.lib.rules.cpp.LibraryToLink;
-import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import net.starlark.java.annot.StarlarkMethod;
 import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkValue;
 
 /**
  * Contains information common to multiple objc_* rules, and provides a unified API for extracting
@@ -72,7 +70,7 @@ import net.starlark.java.eval.StarlarkSemantics;
 // TODO(bazel-team): Decompose and subsume area-specific logic and data into the various *Support
 // classes. Make sure to distinguish rule output (providers, runfiles, ...) from intermediate,
 // rule-internal information. Any provider created by a rule should not be read, only published.
-public final class ObjcCommon {
+public final class ObjcCommon implements StarlarkValue {
 
   /** Filters fileset artifacts out of a group of artifacts. */
   public static ImmutableList<Artifact> filterFileset(Iterable<Artifact> artifacts) {
@@ -113,9 +111,9 @@ public final class ObjcCommon {
     private Iterable<PathFragment> includes = ImmutableList.of();
     private IntermediateArtifacts intermediateArtifacts;
     private boolean alwayslink;
+    private Iterable<String> linkopts = ImmutableList.of();
     private boolean hasModuleMap;
     private Iterable<Artifact> extraImportLibraries = ImmutableList.of();
-    private Optional<Artifact> linkedBinary = Optional.absent();
     private Iterable<CcCompilationContext> ccCompilationContexts = ImmutableList.of();
     private Iterable<CcCompilationContext> directCCompilationContexts = ImmutableList.of();
     private Iterable<CcLinkingContext> ccLinkingContexts = ImmutableList.of();
@@ -192,29 +190,27 @@ public final class ObjcCommon {
       return this;
     }
 
-    /** Add the providers for the build dependencies. */
-    Builder addDeps(List<ConfiguredTargetAndData> deps) {
+    Builder addDeps(List<? extends TransitiveInfoCollection> deps) {
       ImmutableList.Builder<ObjcProvider> objcProviders = ImmutableList.builder();
       ImmutableList.Builder<CcInfo> ccInfos = ImmutableList.builder();
       ImmutableList.Builder<CcInfo> ccInfosForDirectFields = ImmutableList.builder();
       ImmutableList.Builder<CcLinkingContext> ccLinkingContexts = ImmutableList.builder();
       ImmutableList.Builder<CcLinkingContext> ccLinkStampContexts = ImmutableList.builder();
 
-      for (ConfiguredTargetAndData dep : deps) {
-        ConfiguredTarget depCT = dep.getConfiguredTarget();
-        if (depCT.get(ObjcProvider.STARLARK_CONSTRUCTOR) != null) {
-          addAnyProviders(objcProviders, depCT, ObjcProvider.STARLARK_CONSTRUCTOR);
+      for (TransitiveInfoCollection dep : deps) {
+        if (dep.get(ObjcProvider.STARLARK_CONSTRUCTOR) != null) {
+          addAnyProviders(objcProviders, dep, ObjcProvider.STARLARK_CONSTRUCTOR);
         } else {
           // This is the way we inject cc_library attributes into direct fields.
-          addAnyProviders(ccInfosForDirectFields, depCT, CcInfo.PROVIDER);
+          addAnyProviders(ccInfosForDirectFields, dep, CcInfo.PROVIDER);
           // We only use CcInfo's linking info if there is no ObjcProvider.  This is required so
           // that objc_library archives do not get treated as if they are from cc targets.
-          addAnyContexts(ccLinkingContexts, depCT, CcInfo.PROVIDER, CcInfo::getCcLinkingContext);
+          addAnyContexts(ccLinkingContexts, dep, CcInfo.PROVIDER, CcInfo::getCcLinkingContext);
         }
-        addAnyProviders(ccInfos, depCT, CcInfo.PROVIDER);
+        addAnyProviders(ccInfos, dep, CcInfo.PROVIDER);
         // Temporary solution to specially handle LinkStamps, so that they don't get dropped.  When
         // linking info has been fully migrated to CcInfo, we can drop this.
-        addAnyContexts(ccLinkStampContexts, depCT, CcInfo.PROVIDER, CcInfo::getCcLinkingContext);
+        addAnyContexts(ccLinkStampContexts, dep, CcInfo.PROVIDER, CcInfo::getCcLinkingContext);
       }
       addObjcProviders(objcProviders.build());
       addCcCompilationContexts(ccInfos.build());
@@ -300,6 +296,11 @@ public final class ObjcCommon {
       return this;
     }
 
+    Builder addLinkopts(Iterable<String> linkopts) {
+      this.linkopts = Iterables.concat(this.linkopts, linkopts);
+      return this;
+    }
+
     /**
      * Specifies that this target has a clang module map. This should be called if this target
      * compiles sources or exposes headers for other targets to use. Note that this does not add
@@ -316,14 +317,6 @@ public final class ObjcCommon {
      */
     Builder addExtraImportLibraries(Iterable<Artifact> extraImportLibraries) {
       this.extraImportLibraries = Iterables.concat(this.extraImportLibraries, extraImportLibraries);
-      return this;
-    }
-
-    /**
-     * Sets a linked binary generated by this rule to be propagated to dependers.
-     */
-    Builder setLinkedBinary(Artifact linkedBinary) {
-      this.linkedBinary = Optional.of(linkedBinary);
       return this;
     }
 
@@ -353,28 +346,15 @@ public final class ObjcCommon {
 
       for (CcLinkingContext linkProvider : ccLinkingContexts) {
         ImmutableList<String> linkOpts = linkProvider.getFlattenedUserLinkFlags();
-        ImmutableSet.Builder<SdkFramework> frameworkLinkOpts = new ImmutableSet.Builder<>();
-        ImmutableList.Builder<String> nonFrameworkLinkOpts = new ImmutableList.Builder<>();
-        // Add any framework flags as frameworks directly, rather than as linkopts.
-        for (UnmodifiableIterator<String> iterator = linkOpts.iterator(); iterator.hasNext(); ) {
-          String arg = iterator.next();
-          if (arg.equals("-framework") && iterator.hasNext()) {
-            String framework = iterator.next();
-            frameworkLinkOpts.add(new SdkFramework(framework));
-          } else {
-            nonFrameworkLinkOpts.add(arg);
-          }
-        }
-
+        addLinkoptsToObjcProvider(linkOpts, objcProvider);
         objcProvider
-            .addAll(SDK_FRAMEWORK, frameworkLinkOpts.build())
-            .addAll(LINKOPT, nonFrameworkLinkOpts.build())
             .addTransitiveAndPropagate(
                 CC_LIBRARY,
                 NestedSetBuilder.<LibraryToLink>linkOrder()
                     .addTransitive(linkProvider.getLibraries())
                     .build());
       }
+      addLinkoptsToObjcProvider(linkopts, objcProvider);
 
       for (CcLinkingContext ccLinkStampContext : ccLinkStampContexts) {
         objcProvider.addAll(LINKSTAMP, ccLinkStampContext.getLinkstamps());
@@ -444,17 +424,14 @@ public final class ObjcCommon {
       }
 
       if (hasModuleMap) {
-        CppModuleMap moduleMap = intermediateArtifacts.moduleMap();
+        CppModuleMap moduleMap = intermediateArtifacts.swiftModuleMap();
         Optional<Artifact> umbrellaHeader = moduleMap.getUmbrellaHeader();
         if (umbrellaHeader.isPresent()) {
           objcProvider.add(UMBRELLA_HEADER, umbrellaHeader.get());
         }
         objcProvider.add(MODULE_MAP, moduleMap.getArtifact());
         objcProvider.addDirect(MODULE_MAP, moduleMap.getArtifact());
-        objcProvider.add(TOP_LEVEL_MODULE_MAP, moduleMap);
       }
-
-      objcProvider.addAll(LINKED_BINARY, linkedBinary.asSet());
 
       ObjcCompilationContext objcCompilationContext = objcCompilationContextBuilder.build();
 
@@ -462,6 +439,25 @@ public final class ObjcCommon {
           purpose, objcProvider.build(), objcCompilationContext, compilationArtifacts);
     }
 
+    private void addLinkoptsToObjcProvider(
+        Iterable<String> linkopts, ObjcProvider.Builder objcProvider) {
+      ImmutableSet.Builder<SdkFramework> frameworkLinkOpts = new ImmutableSet.Builder<>();
+      ImmutableList.Builder<String> nonFrameworkLinkOpts = new ImmutableList.Builder<>();
+      // Add any framework flags as frameworks directly, rather than as linkopts.
+      for (Iterator<String> iterator = linkopts.iterator(); iterator.hasNext(); ) {
+        String arg = iterator.next();
+        if (arg.equals("-framework") && iterator.hasNext()) {
+          String framework = iterator.next();
+          frameworkLinkOpts.add(new SdkFramework(framework));
+        } else {
+          nonFrameworkLinkOpts.add(arg);
+        }
+      }
+
+      objcProvider
+          .addAll(SDK_FRAMEWORK, frameworkLinkOpts.build())
+          .addAll(LINKOPT, nonFrameworkLinkOpts.build());
+    }
   }
 
   private final Purpose purpose;
@@ -485,10 +481,12 @@ public final class ObjcCommon {
     return purpose;
   }
 
+  @StarlarkMethod(name = "objc_provider", documented = false, structField = true)
   public ObjcProvider getObjcProvider() {
     return objcProvider;
   }
 
+  @StarlarkMethod(name = "objc_compilation_context", documented = false, structField = true)
   public ObjcCompilationContext getObjcCompilationContext() {
     return objcCompilationContext;
   }
@@ -551,27 +549,6 @@ public final class ObjcCommon {
       }
     }
     return Optional.absent();
-  }
-
-  /**
-   * Similar to {@link #nearestContainerMatching(FileType, Artifact)}, but returns the container
-   * closest to the root that matches the given type.
-   */
-  static Optional<PathFragment> farthestContainerMatching(FileType type, Artifact artifact) {
-    PathFragment container = artifact.getExecPath();
-    Optional<PathFragment> lastMatch = Optional.absent();
-    do {
-      if (type.matches(container)) {
-        lastMatch = Optional.of(container);
-      }
-      container = container.getParentDirectory();
-    } while (container != null);
-    return lastMatch;
-  }
-
-  static Iterable<String> notInContainerErrors(
-      Iterable<Artifact> artifacts, FileType containerType) {
-    return notInContainerErrors(artifacts, ImmutableList.of(containerType));
   }
 
   static Iterable<String> notInContainerErrors(

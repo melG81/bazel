@@ -109,13 +109,35 @@ java_library(
 )
 
 java_library(
+    name = "cpu_resource_converter",
+    srcs = [
+        "CpuResourceConverter.java",
+    ],
+    deps = [
+        ":resource_converter",
+        "//src/main/java/com/google/devtools/build/lib/actions:localhost_capacity",
+        "//third_party:guava",
+    ],
+)
+
+java_library(
+    name = "ram_resource_converter",
+    srcs = [
+        "RamResourceConverter.java",
+    ],
+    deps = [
+        ":resource_converter",
+        "//src/main/java/com/google/devtools/build/lib/actions:localhost_capacity",
+        "//third_party:guava",
+    ],
+)
+
+java_library(
     name = "util",
     srcs = [
         "AbstractIndexer.java",
         "AnsiStrippingOutputStream.java",
-        "BigIntegerFingerprint.java",
         "BigIntegerFingerprintUtils.java",
-        "BinaryPredicate.java",
         "CPU.java",
         "CanonicalStringIndexer.java",
         "ClassName.java",
@@ -125,11 +147,11 @@ java_library(
         "Fingerprint.java",
         "GroupedList.java",
         "JavaSleeper.java",
-        "LazyString.java",
         "LogHandlerQuerier.java",
         "LoggingUtil.java",
         "LongArrayList.java",
         "NetUtil.java",
+        "OnDemandString.java",
         "OptionsUtils.java",
         "OrderedSetMultimap.java",
         "OsUtils.java",

@@ -36,7 +36,7 @@ import com.google.devtools.build.lib.actions.FileValue.DifferentRealPathFileValu
 import com.google.devtools.build.lib.actions.FileValue.DifferentRealPathFileValueWithoutStoredChain;
 import com.google.devtools.build.lib.actions.FileValue.SymlinkFileValueWithStoredChain;
 import com.google.devtools.build.lib.actions.FileValue.SymlinkFileValueWithoutStoredChain;
-import com.google.devtools.build.lib.actions.InconsistentFilesystemException;
+import com.google.devtools.build.lib.actions.ThreadStateReceiver;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
@@ -44,9 +44,17 @@ import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.events.NullEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
+import com.google.devtools.build.lib.io.FileSymlinkCycleException;
+import com.google.devtools.build.lib.io.FileSymlinkCycleUniquenessFunction;
+import com.google.devtools.build.lib.io.FileSymlinkInfiniteExpansionException;
+import com.google.devtools.build.lib.io.FileSymlinkInfiniteExpansionUniquenessFunction;
+import com.google.devtools.build.lib.io.InconsistentFilesystemException;
 import com.google.devtools.build.lib.packages.WorkspaceFileValue;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
+import com.google.devtools.build.lib.rules.repository.LocalRepositoryFunction;
+import com.google.devtools.build.lib.rules.repository.LocalRepositoryRule;
 import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
+import com.google.devtools.build.lib.rules.repository.RepositoryFunction;
 import com.google.devtools.build.lib.skyframe.ExternalFilesHelper.ExternalFileAction;
 import com.google.devtools.build.lib.skyframe.PackageLookupFunction.CrossRepositoryLabelViolationStrategy;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.FsUtils;
@@ -88,6 +96,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -152,6 +161,9 @@ public class FileFunctionTest {
     differencer = new SequencedRecordingDifferencer();
     ConfiguredRuleClassProvider ruleClassProvider =
         TestRuleClassProvider.getRuleClassProviderWithClearedSuffix();
+    ImmutableMap<String, RepositoryFunction> repositoryHandlers =
+        ImmutableMap.of(
+            LocalRepositoryRule.NAME, (RepositoryFunction) new LocalRepositoryFunction());
     MemoizingEvaluator evaluator =
         new InMemoryMemoizingEvaluator(
             ImmutableMap.<SkyFunctionName, SkyFunction>builder()
@@ -162,15 +174,27 @@ public class FileFunctionTest {
                         new AtomicReference<>(UnixGlob.DEFAULT_SYSCALLS),
                         externalFilesHelper))
                 .put(
-                    SkyFunctions.FILE_SYMLINK_CYCLE_UNIQUENESS,
+                    FileSymlinkCycleUniquenessFunction.NAME,
                     new FileSymlinkCycleUniquenessFunction())
                 .put(
-                    SkyFunctions.FILE_SYMLINK_INFINITE_EXPANSION_UNIQUENESS,
+                    FileSymlinkInfiniteExpansionUniquenessFunction.NAME,
                     new FileSymlinkInfiniteExpansionUniquenessFunction())
                 .put(FileValue.FILE, new FileFunction(pkgLocatorRef))
                 .put(
                     SkyFunctions.PACKAGE,
-                    new PackageFunction(null, null, null, null, null, null, null, null))
+                    new PackageFunction(
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        /*packageProgress=*/ null,
+                        PackageFunction.ActionOnIOExceptionReadingBuildFile.UseOriginalIOException
+                            .INSTANCE,
+                        PackageFunction.IncrementalityIntent.INCREMENTAL,
+                        k -> ThreadStateReceiver.NULL_INSTANCE))
                 .put(
                     SkyFunctions.PACKAGE_LOOKUP,
                     new PackageLookupFunction(
@@ -195,14 +219,27 @@ public class FileFunctionTest {
                     SkyFunctions.LOCAL_REPOSITORY_LOOKUP,
                     new LocalRepositoryLookupFunction(
                         BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER))
+                .put(
+                    SkyFunctions.REPOSITORY_DIRECTORY,
+                    new RepositoryDelegatorFunction(
+                        repositoryHandlers,
+                        null,
+                        new AtomicBoolean(true),
+                        ImmutableMap::of,
+                        directories,
+                        ManagedDirectoriesKnowledge.NO_MANAGED_DIRECTORIES,
+                        BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER))
                 .build(),
             differencer);
     PrecomputedValue.BUILD_ID.set(differencer, UUID.randomUUID());
     PrecomputedValue.PATH_PACKAGE_LOCATOR.set(differencer, pkgLocator);
     RepositoryDelegatorFunction.REPOSITORY_OVERRIDES.set(differencer, ImmutableMap.of());
+    RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING.set(
+        differencer, RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY);
     PrecomputedValue.STARLARK_SEMANTICS.set(differencer, StarlarkSemantics.DEFAULT);
     RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE.set(
         differencer, Optional.empty());
+    RepositoryDelegatorFunction.ENABLE_BZLMOD.set(differencer, false);
     return new SequentialBuildDriver(evaluator);
   }
 

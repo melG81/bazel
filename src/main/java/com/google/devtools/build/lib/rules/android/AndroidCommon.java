@@ -13,8 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.android;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.analysis.AnalysisUtils;
@@ -45,12 +48,13 @@ import com.google.devtools.build.lib.packages.TriState;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.rules.android.ZipFilterBuilder.CheckHashMismatchMode;
 import com.google.devtools.build.lib.rules.android.databinding.DataBindingContext;
+import com.google.devtools.build.lib.rules.android.databinding.DataBindingV2Provider;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
 import com.google.devtools.build.lib.rules.cpp.CcLinkingContext;
 import com.google.devtools.build.lib.rules.cpp.CcLinkingContext.LinkOptions;
 import com.google.devtools.build.lib.rules.java.BootClassPathInfo;
 import com.google.devtools.build.lib.rules.java.ClasspathConfiguredFragment;
-import com.google.devtools.build.lib.rules.java.JavaCcLinkParamsProvider;
+import com.google.devtools.build.lib.rules.java.JavaCcInfoProvider;
 import com.google.devtools.build.lib.rules.java.JavaCommon;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider.ClasspathType;
@@ -58,9 +62,8 @@ import com.google.devtools.build.lib.rules.java.JavaCompilationArtifacts;
 import com.google.devtools.build.lib.rules.java.JavaCompilationHelper;
 import com.google.devtools.build.lib.rules.java.JavaCompileOutputs;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
-import com.google.devtools.build.lib.rules.java.JavaPluginInfoProvider;
 import com.google.devtools.build.lib.rules.java.JavaRuleOutputJarsProvider;
-import com.google.devtools.build.lib.rules.java.JavaRuleOutputJarsProvider.OutputJar;
+import com.google.devtools.build.lib.rules.java.JavaRuleOutputJarsProvider.JavaOutput;
 import com.google.devtools.build.lib.rules.java.JavaSemantics;
 import com.google.devtools.build.lib.rules.java.JavaSourceJarsProvider;
 import com.google.devtools.build.lib.rules.java.JavaTargetAttributes;
@@ -69,6 +72,7 @@ import com.google.devtools.build.lib.rules.java.proto.GeneratedExtensionRegistry
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * A helper class for android rules.
@@ -225,7 +229,7 @@ public class AndroidCommon {
   public static AndroidIdeInfoProvider createAndroidIdeInfoProvider(
       RuleContext ruleContext,
       AndroidIdlHelper idlHelper,
-      OutputJar resourceJar,
+      JavaOutput resourceJarJavaOutput,
       Artifact aar,
       ResourceApk resourceApk,
       Artifact zipAlignedApk,
@@ -235,7 +239,7 @@ public class AndroidCommon {
         new AndroidIdeInfoProvider.Builder()
             .setIdlClassJar(idlHelper.getIdlClassJar())
             .setIdlSourceJar(idlHelper.getIdlSourceJar())
-            .setResourceJar(resourceJar)
+            .setResourceJarJavaOutput(resourceJarJavaOutput)
             .setAar(aar)
             .setNativeLibs(nativeLibs.getMap())
             .addIdlImportRoot(idlHelper.getIdlImportRoot())
@@ -433,6 +437,7 @@ public class AndroidCommon {
       boolean addCoverageSupport,
       boolean collectJavaCompilationArgs,
       boolean isBinary,
+      boolean shouldCompileJavaSrcs,
       NestedSet<Artifact> excludedRuntimeArtifacts,
       boolean generateExtensionRegistry)
       throws InterruptedException, RuleErrorException {
@@ -457,22 +462,26 @@ public class AndroidCommon {
     ImmutableList.Builder<String> javacopts = ImmutableList.builder();
     javacopts.addAll(androidSemantics.getCompatibleJavacOptions(ruleContext));
 
-    resourceApk
-        .asDataBindingContext()
-        .supplyJavaCoptsUsing(ruleContext, isBinary, javacopts::addAll);
+    if (shouldCompileJavaSrcs) {
+      resourceApk
+          .asDataBindingContext()
+          .supplyJavaCoptsUsing(ruleContext, isBinary, javacopts::addAll);
+    }
     JavaTargetAttributes.Builder attributesBuilder =
         javaCommon
             .initCommon(idlHelper.getIdlGeneratedJavaSources(), javacopts.build())
             .setBootClassPath(bootClassPathInfo);
 
-    resourceApk
-        .asDataBindingContext()
-        .supplyAnnotationProcessor(
-            ruleContext,
-            (plugin, additionalOutputs) -> {
-              attributesBuilder.addPlugin(plugin);
-              attributesBuilder.addAdditionalOutputs(additionalOutputs);
-            });
+    if (shouldCompileJavaSrcs) {
+      resourceApk
+          .asDataBindingContext()
+          .supplyAnnotationProcessor(
+              ruleContext,
+              (plugin, additionalOutputs) -> {
+                attributesBuilder.addPlugin(plugin);
+                attributesBuilder.addAdditionalOutputs(additionalOutputs);
+              });
+    }
 
     if (excludedRuntimeArtifacts != null) {
       attributesBuilder.addExcludedArtifacts(excludedRuntimeArtifacts);
@@ -500,9 +509,19 @@ public class AndroidCommon {
       jarsProducedForRuntime.add(resourceApk.getResourceJavaClassJar());
     }
 
-    // Databinding metadata that the databinding annotation processor reads.
-    ImmutableList<Artifact> additionalJavaInputsFromDatabinding =
-        resourceApk.asDataBindingContext().processDeps(ruleContext, isBinary);
+    ImmutableList<Artifact> additionalJavaInputsFromDatabinding = null;
+    if (shouldCompileJavaSrcs) {
+      // Databinding metadata that the databinding annotation processor reads.
+      additionalJavaInputsFromDatabinding =
+          resourceApk.asDataBindingContext().processDeps(ruleContext, isBinary);
+    } else {
+      ImmutableList.Builder<Artifact> outputs = ImmutableList.<Artifact>builder();
+      DataBindingV2Provider p =
+          ruleContext.getPrerequisite("application_resources", DataBindingV2Provider.PROVIDER);
+      outputs.addAll(p.getSetterStores());
+      outputs.addAll(p.getTransitiveBRFiles().toList());
+      additionalJavaInputsFromDatabinding = outputs.build();
+    }
 
     JavaCompilationHelper helper =
         initAttributes(attributesBuilder, javaSemantics, additionalJavaInputsFromDatabinding);
@@ -543,12 +562,7 @@ public class AndroidCommon {
       ImmutableList<Artifact> additionalArtifacts) {
     JavaCompilationHelper helper =
         new JavaCompilationHelper(
-            ruleContext,
-            semantics,
-            javaCommon.getJavacOpts(),
-            attributes,
-            additionalArtifacts,
-            /*disableStrictDeps=*/ false);
+            ruleContext, semantics, javaCommon.getJavacOpts(), attributes, additionalArtifacts);
 
     helper.addLibrariesToAttributes(javaCommon.targetsTreatedAsDeps(ClasspathType.COMPILE_ONLY));
     attributes.setTargetLabel(ruleContext.getLabel());
@@ -648,22 +662,26 @@ public class AndroidCommon {
     if (generatedExtensionRegistryProvider != null) {
       builder.addNativeDeclaredProvider(generatedExtensionRegistryProvider);
     }
-    OutputJar resourceJar = null;
+    JavaOutput resourceJarJavaOutput = null;
     if (resourceApk.getResourceJavaClassJar() != null && resourceSourceJar != null) {
-      resourceJar =
-          new OutputJar(
-              resourceApk.getResourceJavaClassJar(),
-              null /* ijar */,
-              outputs.manifestProto(),
-              ImmutableList.of(resourceSourceJar));
-      javaRuleOutputJarsProviderBuilder.addOutputJar(resourceJar);
+      resourceJarJavaOutput =
+          JavaOutput.builder()
+              .setClassJar(resourceApk.getResourceJavaClassJar())
+              .addSourceJar(resourceSourceJar)
+              .build();
+      javaRuleOutputJarsProviderBuilder.addJavaOutput(resourceJarJavaOutput);
     }
 
     JavaRuleOutputJarsProvider ruleOutputJarsProvider =
         javaRuleOutputJarsProviderBuilder
-            .addOutputJar(classJar, iJar, outputs.manifestProto(), ImmutableList.of(srcJar))
-            .setJdeps(outputs.depsProto())
-            .setNativeHeaders(outputs.nativeHeader())
+            .addJavaOutput(
+                JavaOutput.builder()
+                    .fromJavaCompileOutputs(outputs)
+                    .setCompileJar(iJar)
+                    .setCompileJdeps(
+                        javaCommon.getJavaCompilationArtifacts().getCompileTimeDependencyArtifact())
+                    .addSourceJar(srcJar)
+                    .build())
             .build();
     JavaSourceJarsProvider sourceJarsProvider = javaSourceJarsProviderBuilder.build();
     JavaCompilationArgsProvider compilationArgsProvider = javaCompilationArgs;
@@ -683,7 +701,7 @@ public class AndroidCommon {
             .addProvider(JavaCompilationArgsProvider.class, compilationArgsProvider)
             .addProvider(JavaRuleOutputJarsProvider.class, ruleOutputJarsProvider)
             .addProvider(JavaSourceJarsProvider.class, sourceJarsProvider)
-            .addProvider(JavaPluginInfoProvider.class, JavaCommon.getTransitivePlugins(ruleContext))
+            .javaPluginInfo(JavaCommon.getTransitivePlugins(ruleContext))
             .setRuntimeJars(javaCommon.getJavaCompilationArtifacts().getRuntimeJars())
             .setJavaConstraints(ImmutableList.of("android"))
             .setNeverlink(isNeverlink)
@@ -714,7 +732,7 @@ public class AndroidCommon {
             createAndroidIdeInfoProvider(
                 ruleContext,
                 idlHelper,
-                resourceJar,
+                resourceJarJavaOutput,
                 aar,
                 resourceApk,
                 zipAlignedApk,
@@ -813,18 +831,14 @@ public class AndroidCommon {
     CcInfo linkoptsCcInfo = CcInfo.builder().setCcLinkingContext(ccLinkingContext).build();
 
     ImmutableList<CcInfo> ccInfos =
-        ImmutableList.<CcInfo>builder()
-            .add(linkoptsCcInfo)
-            .addAll(
-                AnalysisUtils.getProviders(deps, JavaCcLinkParamsProvider.PROVIDER).stream()
-                    .map(JavaCcLinkParamsProvider::getCcInfo)
-                    .collect(ImmutableList.toImmutableList()))
-            .addAll(
+        Streams.concat(
+                Stream.of(linkoptsCcInfo),
+                JavaInfo.getProvidersFromListOfTargets(JavaCcInfoProvider.class, deps).stream()
+                    .map(JavaCcInfoProvider::getCcInfo),
                 AnalysisUtils.getProviders(deps, AndroidCcLinkParamsProvider.PROVIDER).stream()
-                    .map(AndroidCcLinkParamsProvider::getLinkParams)
-                    .collect(ImmutableList.toImmutableList()))
-            .addAll(AnalysisUtils.getProviders(deps, CcInfo.PROVIDER))
-            .build();
+                    .map(AndroidCcLinkParamsProvider::getLinkParams),
+                AnalysisUtils.getProviders(deps, CcInfo.PROVIDER).stream())
+            .collect(toImmutableList());
 
     return CcInfo.merge(ccInfos);
   }
@@ -879,10 +893,8 @@ public class AndroidCommon {
     ImmutableList<Artifact> dataBindingSources =
         dataBindingContext.getAnnotationSourceFiles(ruleContext);
 
-    ImmutableList<Artifact> srcs = ImmutableList.<Artifact>builder()
-        .addAll(ruleSources)
-        .addAll(dataBindingSources)
-        .build();
+    ImmutableList<Artifact> srcs =
+        ImmutableList.<Artifact>builder().addAll(ruleSources).addAll(dataBindingSources).build();
 
     ImmutableList<TransitiveInfoCollection> compileDeps;
     ImmutableList<TransitiveInfoCollection> runtimeDeps;

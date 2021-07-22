@@ -89,7 +89,6 @@ import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
-import com.google.devtools.build.lib.util.LoggingUtil;
 import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.OutputService;
 import com.google.devtools.build.lib.vfs.Path;
@@ -100,14 +99,15 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
 import javax.annotation.Nullable;
 
 /**
@@ -192,9 +192,7 @@ public class ExecutionTool {
     actionContextRegistryBuilder.register(DynamicStrategyRegistry.class, spawnStrategyRegistry);
     actionContextRegistryBuilder.register(RemoteLocalFallbackRegistry.class, spawnStrategyRegistry);
 
-    ModuleActionContextRegistry moduleActionContextRegistry = actionContextRegistryBuilder.build();
-
-    this.actionContextRegistry = moduleActionContextRegistry;
+    this.actionContextRegistry = actionContextRegistryBuilder.build();
     this.spawnStrategyRegistry = spawnStrategyRegistry;
   }
 
@@ -281,8 +279,12 @@ public class ExecutionTool {
 
     handleConvenienceSymlinks(analysisResult);
 
-    ActionCache actionCache = getActionCache();
-    actionCache.resetStatistics();
+    BuildRequestOptions options = request.getBuildOptions();
+    ActionCache actionCache = null;
+    if (options.useActionCache) {
+      actionCache = getActionCache();
+      actionCache.resetStatistics();
+    }
     SkyframeExecutor skyframeExecutor = env.getSkyframeExecutor();
     Builder builder;
     try (SilentCloseable c = Profiler.instance().profile("createBuilder")) {
@@ -336,7 +338,7 @@ public class ExecutionTool {
               actionGraph,
               // If this supplier is ever consumed by more than one ActionContextProvider, it can be
               // pulled out of the loop and made a memoizing supplier.
-              () -> TopLevelArtifactHelper.makeTopLevelArtifactsToOwnerLabels(analysisResult));
+              () -> TopLevelArtifactHelper.findAllTopLevelArtifacts(analysisResult));
         }
       }
       skyframeExecutor.drainChangedFiles();
@@ -347,12 +349,10 @@ public class ExecutionTool {
 
       Profiler.instance().markPhase(ProfilePhase.EXECUTE);
       boolean shouldTrustRemoteArtifacts =
-          env.getOutputService() == null
-              ? false
-              : env.getOutputService().shouldTrustRemoteArtifacts();
+          env.getOutputService() != null && env.getOutputService().shouldTrustRemoteArtifacts();
       builder.buildArtifacts(
           env.getReporter(),
-          analysisResult.getTopLevelArtifactsToOwnerLabels().getArtifacts(),
+          analysisResult.getArtifactsToBuild(),
           analysisResult.getParallelTests(),
           analysisResult.getExclusiveTests(),
           analysisResult.getTargetsToBuild(),
@@ -598,7 +598,7 @@ public class ExecutionTool {
         buildRequestOptions.useTopLevelTargetsForSymlinks()
             ? analysisResult.getTargetsToBuild().stream()
                 .map(ConfiguredTarget::getConfigurationKey)
-                .filter(configuration -> configuration != null)
+                .filter(Objects::nonNull)
                 .distinct()
                 .map((key) -> executor.getConfiguration(reporter, key))
                 .collect(toImmutableSet())
@@ -713,7 +713,7 @@ public class ExecutionTool {
    *
    * @param configuredTargets The configured targets whose artifacts are to be built.
    */
-  private Collection<ConfiguredTarget> determineSuccessfulTargets(
+  private static Collection<ConfiguredTarget> determineSuccessfulTargets(
       Collection<ConfiguredTarget> configuredTargets, Set<ConfiguredTargetKey> builtTargets) {
     // Maintain the ordering by copying builtTargets into a LinkedHashSet in the same iteration
     // order as configuredTargets.
@@ -739,12 +739,8 @@ public class ExecutionTool {
   /** Get action cache if present or reload it from the on-disk cache. */
   private ActionCache getActionCache() throws AbruptExitException {
     try {
-      return env.getPersistentActionCache();
+      return env.getBlazeWorkspace().getOrLoadPersistentActionCache(getReporter());
     } catch (IOException e) {
-      // TODO(bazel-team): (2010) Ideally we should just remove all cache data and reinitialize
-      // caches.
-      LoggingUtil.logToRemote(
-          Level.WARNING, "Failed to initialize action cache: " + e.getMessage(), e);
       String message =
           String.format(
               "Couldn't create action cache: %s. If error persists, use 'bazel clean'.",
@@ -763,7 +759,7 @@ public class ExecutionTool {
 
   private Builder createBuilder(
       BuildRequest request,
-      ActionCache actionCache,
+      @Nullable ActionCache actionCache,
       SkyframeExecutor skyframeExecutor,
       ModifiedFileSet modifiedOutputFiles) {
     BuildRequestOptions options = request.getBuildOptions();
@@ -791,7 +787,8 @@ public class ExecutionTool {
             ? modifiedOutputFiles
             : ModifiedFileSet.NOTHING_MODIFIED,
         env.getFileCache(),
-        prefetcher);
+        prefetcher,
+        env.getRuntime().getBugReporter());
   }
 
   @VisibleForTesting
@@ -814,20 +811,22 @@ public class ExecutionTool {
    * Writes the action cache files to disk, reporting any errors that occurred during writing and
    * capturing statistics.
    */
-  private void saveActionCache(ActionCache actionCache) {
+  private void saveActionCache(@Nullable ActionCache actionCache) {
     ActionCacheStatistics.Builder builder = ActionCacheStatistics.newBuilder();
-    actionCache.mergeIntoActionCacheStatistics(builder);
 
-    AutoProfiler p =
-        GoogleAutoProfilerUtils.profiledAndLogged("Saving action cache", ProfilerTask.INFO);
-    try {
-      builder.setSizeInBytes(actionCache.save());
-    } catch (IOException e) {
-      builder.setSizeInBytes(0);
-      getReporter().handle(Event.error("I/O error while writing action log: " + e.getMessage()));
-    } finally {
-      builder.setSaveTimeInMs(
-          TimeUnit.MILLISECONDS.convert(p.completeAndGetElapsedTimeNanos(), TimeUnit.NANOSECONDS));
+    if (actionCache != null) {
+      actionCache.mergeIntoActionCacheStatistics(builder);
+
+      AutoProfiler p =
+          GoogleAutoProfilerUtils.profiledAndLogged("Saving action cache", ProfilerTask.INFO);
+      try {
+        builder.setSizeInBytes(actionCache.save());
+      } catch (IOException e) {
+        builder.setSizeInBytes(0);
+        getReporter().handle(Event.error("I/O error while writing action log: " + e.getMessage()));
+      } finally {
+        builder.setSaveTimeInMs(Duration.ofNanos(p.completeAndGetElapsedTimeNanos()).toMillis());
+      }
     }
 
     env.getEventBus().post(builder.build());

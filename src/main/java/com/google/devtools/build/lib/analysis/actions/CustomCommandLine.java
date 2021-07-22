@@ -37,7 +37,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
 import com.google.devtools.build.lib.util.Fingerprint;
-import com.google.devtools.build.lib.util.LazyString;
+import com.google.devtools.build.lib.util.OnDemandString;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CompileTimeConstant;
 import com.google.errorprone.annotations.FormatMethod;
@@ -797,6 +797,16 @@ public final class CustomCommandLine extends CommandLine {
     }
 
     /**
+     * Adds an artifact by calling {@link PathFragment#getCallablePathString}.
+     *
+     * <p>Prefer this over manually calling {@link PathFragment#getCallablePathString}, as it avoids
+     * storing a copy of the path string.
+     */
+    public Builder addCallablePath(@Nullable PathFragment value) {
+      return addObjectInternal(new CallablePathFragment(value));
+    }
+
+    /**
      * Adds an artifact by calling {@link PathFragment#getPathString}.
      *
      * <p>Prefer this over manually calling {@link PathFragment#getPathString}, as it avoids storing
@@ -831,12 +841,12 @@ public final class CustomCommandLine extends CommandLine {
     }
 
     /** Adds a lazily expanded string. */
-    public Builder addLazyString(@Nullable LazyString value) {
+    public Builder addLazyString(@Nullable OnDemandString value) {
       return addObjectInternal(value);
     }
 
     /** Adds a lazily expanded string. */
-    public Builder addLazyString(@CompileTimeConstant String arg, @Nullable LazyString value) {
+    public Builder addLazyString(@CompileTimeConstant String arg, @Nullable OnDemandString value) {
       return addObjectInternal(arg, value);
     }
 
@@ -1318,6 +1328,20 @@ public final class CustomCommandLine extends CommandLine {
       } else {
         fingerprint.addString(CommandLineItem.expandToCommandLine(substitutedArg));
       }
+    }
+  }
+
+  /** A {@link PathFragment} that is expanded with {@link PathFragment#getCallablePathString()}. */
+  private static final class CallablePathFragment {
+    public final PathFragment fragment;
+
+    CallablePathFragment(PathFragment fragment) {
+      this.fragment = fragment;
+    }
+
+    @Override
+    public String toString() {
+      return fragment.getCallablePathString();
     }
   }
 }

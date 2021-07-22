@@ -58,11 +58,18 @@ import net.starlark.java.eval.StarlarkValue;
 public final class Label
     implements Comparable<Label>, Serializable, StarlarkValue, SkyKey, CommandLineItem {
 
+  // Intern "__pkg__" and "__subpackages__" pseudo-targets, which appears in labels used for
+  // visibility specifications. This saves a couple tenths of a percent of RAM off the loading
+  // phase. Note that general interning of all values for `name` is *not* beneficial. See
+  // Google-internal cl/386077913 and cl/185394812 for more context.
+  private static final String PKG_VISIBILITY_NAME = "__pkg__";
+  private static final String SUBPACKAGES_VISIBILITY_NAME = "__subpackages__";
+
   /**
    * Package names that aren't made relative to the current repository because they mean special
    * things to Bazel.
    */
-  public static final ImmutableSet<PathFragment> ABSOLUTE_PACKAGE_NAMES =
+  private static final ImmutableSet<PathFragment> ABSOLUTE_PACKAGE_NAMES =
       ImmutableSet.of(
           // Used for select
           PathFragment.create("conditions"),
@@ -101,8 +108,7 @@ public final class Label
   public static Label parseAbsolute(
       String absName, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
       throws LabelSyntaxException {
-    return parseAbsolute(
-        absName, /* defaultToMain= */ true, repositoryMapping);
+    return parseAbsolute(absName, /*defaultToMain=*/ true, repositoryMapping);
   }
 
   /**
@@ -153,21 +159,14 @@ public final class Label
               labelParts.getPackageName(), labelParts.getTargetName(), repo, repositoryMapping);
       PathFragment packageFragment = pkgId.getPackageFragment();
       if (repo.isEmpty() && ABSOLUTE_PACKAGE_NAMES.contains(packageFragment)) {
-        pkgId =
-            PackageIdentifier.create(getGlobalRepoName("@", repositoryMapping), packageFragment);
+        RepositoryName globalRepo =
+            repositoryMapping.getOrDefault(RepositoryName.MAIN, RepositoryName.MAIN);
+        pkgId = PackageIdentifier.create(globalRepo, packageFragment);
       }
       return create(pkgId, labelParts.getTargetName());
     } catch (BadLabelException e) {
       throw new LabelSyntaxException(e.getMessage());
     }
-  }
-
-  private static RepositoryName getGlobalRepoName(
-      String repo, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
-      throws LabelSyntaxException {
-    Preconditions.checkNotNull(repositoryMapping);
-    RepositoryName repoName = RepositoryName.create(repo);
-    return repositoryMapping.getOrDefault(repoName, repoName);
   }
 
   /**
@@ -221,7 +220,13 @@ public final class Label
    */
   @AutoCodec.Instantiator
   public static Label createUnvalidated(PackageIdentifier packageIdentifier, String name) {
-    return LABEL_INTERNER.intern(new Label(packageIdentifier, name));
+    String internedName = name;
+    if (internedName.equals(PKG_VISIBILITY_NAME)) {
+      internedName = PKG_VISIBILITY_NAME;
+    } else if (internedName.equals(SUBPACKAGES_VISIBILITY_NAME)) {
+      internedName = SUBPACKAGES_VISIBILITY_NAME;
+    }
+    return LABEL_INTERNER.intern(new Label(packageIdentifier, internedName));
   }
 
   /**
@@ -299,12 +304,10 @@ public final class Label
       String repo,
       ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
       throws LabelSyntaxException {
-    String error = null;
     try {
       return PackageIdentifier.parse(packageIdentifier, repo, repositoryMapping);
     } catch (LabelSyntaxException e) {
-      error = e.getMessage();
-      error = "invalid package name '" + packageIdentifier + "': " + error;
+      String error = "invalid package name '" + packageIdentifier + "': " + e.getMessage();
       // This check is just for a more helpful error message
       // i.e. valid target name, invalid package name, colon-free label form
       // used => probably they meant "//foo:bar.c" not "//foo/bar.c".
@@ -556,7 +559,7 @@ public final class Label
    * {@code //wiz:quux} relative to {@code //foo/bar:baz} is {@code //wiz:quux};
    * {@code @repo//foo:bar} relative to anything will be {@code @repo//foo:bar} if {@code @repo} is
    * not in {@code repositoryMapping} but will be {@code @other_repo//foo:bar} if there is an entry
-   * {@code @repo -> @other_repo} in {@code repositoryMapping}
+   * {@code @repo -> @other_repo} in {@code repositoryMapping}.
    *
    * @param relName the relative label name; must be non-empty
    * @param repositoryMapping the map of local repository names in external repository to global
@@ -566,12 +569,15 @@ public final class Label
       String relName, ImmutableMap<RepositoryName, RepositoryName> repositoryMapping)
       throws LabelSyntaxException {
     Preconditions.checkNotNull(repositoryMapping);
-    if (relName.length() == 0) {
+    if (relName.isEmpty()) {
       throw new LabelSyntaxException("empty package-relative label");
     }
 
     if (LabelValidator.isAbsolute(relName)) {
-      return resolveRepositoryRelative(parseAbsolute(relName, false, repositoryMapping));
+      // If this label is in the main repository, default the new label to the main repo as well to
+      // save resolveRepositoryRelative some work.
+      return resolveRepositoryRelative(
+          parseAbsolute(relName, /*defaultToMain=*/ getRepository().isMain(), repositoryMapping));
     } else if (relName.equals(":")) {
       throw new LabelSyntaxException("':' is not a valid package-relative label");
     } else if (relName.charAt(0) == ':') {
@@ -594,17 +600,17 @@ public final class Label
     if (packageIdentifier.getRepository().isDefault()
         || !relative.packageIdentifier.getRepository().isDefault()) {
       return relative;
-    } else {
-      try {
-        return create(
-            PackageIdentifier.create(
-                packageIdentifier.getRepository(), relative.getPackageFragment()),
-            relative.getName());
-      } catch (LabelSyntaxException e) {
-        // We are creating the new label from an existing one which is guaranteed to be valid, so
-        // this can't happen
-        throw new IllegalStateException(e);
-      }
+    }
+
+    try {
+      return create(
+          PackageIdentifier.create(
+              packageIdentifier.getRepository(), relative.getPackageFragment()),
+          relative.name);
+    } catch (LabelSyntaxException e) {
+      // We are creating the new label from an existing one which is guaranteed to be valid, so this
+      // can't happen.
+      throw new IllegalStateException(e);
     }
   }
 
@@ -618,6 +624,15 @@ public final class Label
     return hashCode(name, packageIdentifier);
   }
 
+  /**
+   * Specialization of {@link Arrays#hashCode()} that does not require constructing a 2-element
+   * array.
+   */
+  private static int hashCode(Object obj1, Object obj2) {
+    int result = 31 + (obj1 == null ? 0 : obj1.hashCode());
+    return 31 * result + (obj2 == null ? 0 : obj2.hashCode());
+  }
+
   /** Two labels are equal iff both their name and their package name are equal. */
   @Override
   public boolean equals(Object other) {
@@ -628,7 +643,7 @@ public final class Label
       return false;
     }
     Label otherLabel = (Label) other;
-    // Package identifiers are interned so we compare them first.
+    // Package identifiers are (weakly) interned so we compare them first.
     return packageIdentifier.equals(otherLabel.packageIdentifier) && name.equals(otherLabel.name);
   }
 
@@ -664,7 +679,7 @@ public final class Label
    */
   public static PathFragment getContainingDirectory(Label label) {
     PathFragment pkg = label.getPackageFragment();
-    String name = label.getName();
+    String name = label.name;
     if (name.equals(".")) {
       return pkg;
     }
@@ -695,14 +710,5 @@ public final class Label
   @Override
   public String expandToCommandLine() {
     return getCanonicalForm();
-  }
-
-  /**
-   * Specialization of {@link Arrays#hashCode()} that does not require constructing a 2-element
-   * array.
-   */
-  private static final int hashCode(Object obj1, Object obj2) {
-    int result = 31 + (obj1 == null ? 0 : obj1.hashCode());
-    return 31 * result + (obj2 == null ? 0 : obj2.hashCode());
   }
 }

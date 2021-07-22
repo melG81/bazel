@@ -50,7 +50,7 @@ public class WindowsFileSystem extends JavaIoFileSystem {
   }
 
   @Override
-  public boolean delete(PathFragment path) throws IOException {
+  protected boolean delete(PathFragment path) throws IOException {
     long startTime = Profiler.nanoTimeMaybe();
     try {
       return WindowsFileOperations.deletePath(path.getPathString());
@@ -61,6 +61,12 @@ public class WindowsFileSystem extends JavaIoFileSystem {
     } finally {
       profiler.logSimpleTask(startTime, ProfilerTask.VFS_DELETE, path.getPathString());
     }
+  }
+
+  @Override
+  protected boolean createWritableDirectory(PathFragment path) throws IOException {
+    // All directories are writable on Windows.
+    return createDirectory(path);
   }
 
   @Override

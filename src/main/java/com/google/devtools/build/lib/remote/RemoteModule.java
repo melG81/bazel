@@ -177,7 +177,7 @@ public final class RemoteModule extends BlazeModule {
             retrier);
     ServerCapabilities capabilities = null;
     try {
-      capabilities = rsc.get(env.getCommandId().toString(), env.getBuildRequestId());
+      capabilities = rsc.get(env.getBuildRequestId(), env.getCommandId().toString());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return;
@@ -223,7 +223,7 @@ public final class RemoteModule extends BlazeModule {
     RemoteCache remoteCache = new RemoteCache(cacheClient, remoteOptions, digestUtil);
     actionContextProvider =
         RemoteActionContextProvider.createForRemoteCaching(
-            env, remoteCache, /* retryScheduler= */ null, digestUtil);
+            env, remoteOptions, remoteCache, /* retryScheduler= */ null, digestUtil);
   }
 
   @Override
@@ -269,6 +269,8 @@ public final class RemoteModule extends BlazeModule {
 
     if (!enableDiskCache && !enableHttpCache && !enableGrpcCache && !enableRemoteExecution) {
       // Quit if no remote caching or execution was enabled.
+      actionContextProvider =
+          RemoteActionContextProvider.createForPlaceholder(env, retryScheduler, digestUtil);
       return;
     }
 
@@ -459,6 +461,8 @@ public final class RemoteModule extends BlazeModule {
           errorMessage += System.lineSeparator() + Throwables.getStackTraceAsString(e);
         }
         env.getReporter().handle(Event.warn(errorMessage));
+        actionContextProvider =
+            RemoteActionContextProvider.createForPlaceholder(env, retryScheduler, digestUtil);
         return;
       } else {
         if (verboseFailures) {
@@ -526,7 +530,7 @@ public final class RemoteModule extends BlazeModule {
           new RemoteExecutionCache(cacheClient, remoteOptions, digestUtil);
       actionContextProvider =
           RemoteActionContextProvider.createForRemoteExecution(
-              env, remoteCache, remoteExecutor, retryScheduler, digestUtil, logDir);
+              env, remoteOptions, remoteCache, remoteExecutor, retryScheduler, digestUtil, logDir);
       repositoryRemoteExecutorFactoryDelegate.init(
           new RemoteRepositoryRemoteExecutorFactory(
               remoteCache,
@@ -556,7 +560,7 @@ public final class RemoteModule extends BlazeModule {
       RemoteCache remoteCache = new RemoteCache(cacheClient, remoteOptions, digestUtil);
       actionContextProvider =
           RemoteActionContextProvider.createForRemoteCaching(
-              env, remoteCache, retryScheduler, digestUtil);
+              env, remoteOptions, remoteCache, retryScheduler, digestUtil);
     }
 
     if (enableRemoteDownloader) {
@@ -747,14 +751,6 @@ public final class RemoteModule extends BlazeModule {
       logger.atWarning().withCause(e).log(failureMessage);
     }
 
-    try {
-      deleteDownloadedInputs();
-    } catch (IOException e) {
-      failure = e;
-      failureCode = Code.DOWNLOADED_INPUTS_DELETION_FAILURE;
-      failureMessage = "Failed to delete downloaded inputs";
-    }
-
     buildEventArtifactUploaderFactoryDelegate.reset();
     repositoryRemoteExecutorFactoryDelegate.reset();
     remoteDownloaderSupplier.set(null);
@@ -765,30 +761,6 @@ public final class RemoteModule extends BlazeModule {
 
     if (failure != null) {
       throw createExitException(failureMessage, ExitCode.LOCAL_ENVIRONMENTAL_ERROR, failureCode);
-    }
-  }
-
-  /**
-   * Delete any input files that have been fetched from the remote cache during the build. This is
-   * so that Bazel's view of the output base is identical with the output base after a build i.e.
-   * files that Bazel thinks exist only remotely actually do.
-   */
-  private void deleteDownloadedInputs() throws IOException {
-    if (actionInputFetcher == null) {
-      return;
-    }
-    IOException deletionFailure = null;
-    for (Path file : actionInputFetcher.downloadedFiles()) {
-      try {
-        file.delete();
-      } catch (IOException e) {
-        logger.atSevere().withCause(e).log(
-            "Failed to delete remote output '%s' from the output base.", file);
-        deletionFailure = e;
-      }
-    }
-    if (deletionFailure != null) {
-      throw deletionFailure;
     }
   }
 
@@ -811,7 +783,7 @@ public final class RemoteModule extends BlazeModule {
             env.getOptions().getOptions(RemoteOptions.class), "RemoteOptions");
     registryBuilder.setRemoteLocalFallbackStrategyIdentifier(
         remoteOptions.remoteLocalFallbackStrategy);
-    actionContextProvider.registerRemoteSpawnStrategyIfApplicable(registryBuilder);
+    actionContextProvider.registerRemoteSpawnStrategy(registryBuilder);
   }
 
   @Override
@@ -838,7 +810,7 @@ public final class RemoteModule extends BlazeModule {
         Preconditions.checkNotNull(
             env.getOptions().getOptions(RemoteOptions.class), "RemoteOptions");
     RemoteOutputsMode remoteOutputsMode = remoteOptions.remoteOutputsMode;
-    if (!remoteOutputsMode.downloadAllOutputs()) {
+    if (!remoteOutputsMode.downloadAllOutputs() && actionContextProvider.getRemoteCache() != null) {
       actionInputFetcher =
           new RemoteActionInputFetcher(
               env.getBuildRequestId(),

@@ -7,6 +7,7 @@ package(
 filegroup(
     name = "srcs",
     srcs = glob(["*"]) + [
+        "//src/main/java/com/google/devtools/build/lib/bazel/bzlmod:srcs",
         "//src/main/java/com/google/devtools/build/lib/bazel/commands:srcs",
         "//src/main/java/com/google/devtools/build/lib/bazel/coverage:srcs",
         "//src/main/java/com/google/devtools/build/lib/bazel/debug:srcs",
@@ -25,6 +26,8 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/analysis:analysis_cluster",
         "//src/main/java/com/google/devtools/build/lib/analysis:blaze_directories",
         "//src/main/java/com/google/devtools/build/lib/analysis:config/build_configuration",
+        "//src/main/java/com/google/devtools/build/lib/bazel/bzlmod:registry",
+        "//src/main/java/com/google/devtools/build/lib/bazel/bzlmod:resolution",
         "//src/main/java/com/google/devtools/build/lib/bazel/commands",
         "//src/main/java/com/google/devtools/build/lib/bazel/repository",
         "//src/main/java/com/google/devtools/build/lib/bazel/repository/cache",
@@ -135,7 +138,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/bazel/rules",
         "//src/main/java/com/google/devtools/build/lib/bazel/rules/ninja/actions",
         "//src/main/java/com/google/devtools/build/lib/buildeventservice",
-        "//src/main/java/com/google/devtools/build/lib/collect/nestedset:options",
         "//src/main/java/com/google/devtools/build/lib/dynamic",
         "//src/main/java/com/google/devtools/build/lib/metrics:memory-use-recorder",
         "//src/main/java/com/google/devtools/build/lib/metrics:metrics_module",

@@ -89,6 +89,15 @@ public final class RemoteOptions extends OptionsBase {
   public boolean remoteExecutionKeepalive;
 
   @Option(
+      name = "experimental_remote_capture_corrupted_outputs",
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      converter = OptionsUtils.PathFragmentConverter.class,
+      help = "A path to a directory where the corrupted outputs will be captured to.")
+  public PathFragment remoteCaptureCorruptedOutputs;
+
+  @Option(
       name = "remote_cache",
       oldName = "remote_http_cache",
       defaultValue = "null",
@@ -98,7 +107,7 @@ public final class RemoteOptions extends OptionsBase {
           "A URI of a caching endpoint. The supported schemas are http, https, grpc, grpcs "
               + "(grpc with TLS enabled) and unix (local UNIX sockets). If no schema is provided "
               + "Bazel will default to grpcs. Specify grpc://, http:// or unix: schema to disable "
-              + "TLS. See https://docs.bazel.build/versions/master/remote-caching.html")
+              + "TLS. See https://docs.bazel.build/versions/main/remote-caching.html")
   public String remoteCache;
 
   @Option(
@@ -265,6 +274,19 @@ public final class RemoteOptions extends OptionsBase {
               + " cache, but not in the remote cache.\n"
               + "See #8216 for details.")
   public boolean incompatibleRemoteResultsIgnoreDisk;
+
+  @Option(
+      name = "incompatible_remote_output_paths_relative_to_input_root",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.REMOTE,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      metadataTags = {
+        OptionMetadataTag.INCOMPATIBLE_CHANGE,
+        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
+      },
+      help =
+          "If set to true, output paths are relative to input root instead of working directory.")
+  public boolean incompatibleRemoteOutputPathsRelativeToInputRoot;
 
   @Option(
       name = "remote_instance_name",

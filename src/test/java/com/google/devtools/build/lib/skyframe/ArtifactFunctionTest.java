@@ -38,7 +38,6 @@ import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.MiddlemanType;
-import com.google.devtools.build.lib.actions.MissingInputFileException;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.actions.util.TestAction.DummyAction;
@@ -46,6 +45,7 @@ import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.events.NullEventHandler;
+import com.google.devtools.build.lib.skyframe.ArtifactFunction.SourceArtifactException;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationDepsUtils;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
 import com.google.devtools.build.lib.util.Pair;
@@ -149,7 +149,7 @@ public class ArtifactFunctionTest extends ArtifactFunctionTestCase {
         new DummyAction(
             NestedSetBuilder.create(Order.STABLE_ORDER, input1, input2, tree),
             output,
-            MiddlemanType.AGGREGATING_MIDDLEMAN);
+            MiddlemanType.RUNFILES_MIDDLEMAN);
     actions.add(action);
     file(input2.getPath(), "contents");
     file(input1.getPath(), "source contents");
@@ -158,8 +158,8 @@ public class ArtifactFunctionTest extends ArtifactFunctionTestCase {
             Artifact.keys(ImmutableSet.of(input2, input1, input2, tree)), SkyKey.class));
     SkyValue value = evaluateArtifactValue(output);
     ArrayList<Pair<Artifact, ?>> inputs = new ArrayList<>();
-    inputs.addAll(((AggregatingArtifactValue) value).getFileArtifacts());
-    inputs.addAll(((AggregatingArtifactValue) value).getTreeArtifacts());
+    inputs.addAll(((RunfilesArtifactValue) value).getFileArtifacts());
+    inputs.addAll(((RunfilesArtifactValue) value).getTreeArtifacts());
     assertThat(inputs)
         .containsExactly(
             Pair.of(input1, createForTesting(input1)),
@@ -168,12 +168,12 @@ public class ArtifactFunctionTest extends ArtifactFunctionTestCase {
   }
 
   /**
-   * Tests that ArtifactFunction rethrows transitive {@link IOException}s as {@link
-   * MissingInputFileException}s.
+   * Tests that ArtifactFunction rethrows a transitive {@link IOException} as an {@link
+   * SourceArtifactException}.
    */
   @Test
   public void testIOException_endToEnd() throws Throwable {
-    final IOException exception = new IOException("beep");
+    IOException exception = new IOException("beep");
     setupRoot(
         new CustomInMemoryFs() {
           @Override
@@ -185,9 +185,12 @@ public class ArtifactFunctionTest extends ArtifactFunctionTestCase {
             return super.statIfFound(path, followSymlinks);
           }
         });
-    IOException e =
-        assertThrows(IOException.class, () -> evaluateArtifactValue(createSourceArtifact("bad")));
-    assertThat(e).hasMessageThat().contains(exception.getMessage());
+    Artifact sourceArtifact = createSourceArtifact("bad");
+    SourceArtifactException e =
+        assertThrows(SourceArtifactException.class, () -> evaluateArtifactValue(sourceArtifact));
+    assertThat(e)
+        .hasMessageThat()
+        .isEqualTo("error reading file '" + sourceArtifact.getExecPathString() + "': beep");
   }
 
   @Test

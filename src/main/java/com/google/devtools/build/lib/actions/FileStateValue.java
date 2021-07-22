@@ -21,8 +21,9 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Interner;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.io.InconsistentFilesystemException;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.util.BigIntegerFingerprint;
+import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileStatus;
@@ -37,7 +38,6 @@ import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.io.IOException;
-import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Objects;
 import javax.annotation.Nullable;
@@ -52,12 +52,14 @@ import javax.annotation.Nullable;
  *   <li>For a directory, the existence is noted.
  *   <li>For a file, the existence is noted, along with metadata about the file (e.g. file digest).
  *       See {@link RegularFileStateValue}.
- *       <ul>
- *         <p>This class is an implementation detail of {@link FileValue} and should not be used by
- *         {@link com.google.devtools.build.skyframe.SkyFunction}s other than {@link FileFunction}.
- *         Instead, {@link FileValue} should be used by {@link
- *         com.google.devtools.build.skyframe.SkyFunction} consumers that care about files.
- *         <p>All subclasses must implement {@link #equals} and {@link #hashCode} properly.
+ * </ul>
+ *
+ * <p>This class is an implementation detail of {@link FileValue} and should not be used by {@link
+ * com.google.devtools.build.skyframe.SkyFunction}s other than {@link
+ * com.google.devtools.build.lib.skyframe.FileFunction}. Instead, {@link FileValue} should be used
+ * by {@link com.google.devtools.build.skyframe.SkyFunction} consumers that care about files.
+ *
+ * <p>All subclasses must implement {@link #equals} and {@link #hashCode} properly.
  */
 public abstract class FileStateValue implements HasDigest, SkyValue {
   public static final SkyFunctionName FILE_STATE = SkyFunctionName.createNonHermetic("FILE_STATE");
@@ -142,9 +144,10 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     return Key.create(rootedPath);
   }
 
+  /** Key type for FileStateValue. */
   @AutoCodec.VisibleForSerialization
   @AutoCodec
-  static class Key extends AbstractSkyKey<RootedPath> {
+  public static class Key extends AbstractSkyKey<RootedPath> {
     private static final Interner<Key> interner = BlazeInterners.newWeakInterner();
 
     private Key(RootedPath arg) {
@@ -183,7 +186,7 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     throw new IllegalStateException();
   }
 
-  public abstract BigInteger getValueFingerprint();
+  public abstract byte[] getValueFingerprint();
 
   @Override
   public String toString() {
@@ -308,15 +311,15 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     }
 
     @Override
-    public BigInteger getValueFingerprint() {
-      BigIntegerFingerprint fp = new BigIntegerFingerprint().addLong(size);
+    public byte[] getValueFingerprint() {
+      Fingerprint fp = new Fingerprint().addLong(size);
       if (digest != null) {
-        fp.addDigestedBytes(digest);
+        fp.addBytes(digest);
       }
       if (contentsProxy != null) {
         contentsProxy.addToFingerprint(fp);
       }
-      return fp.getFingerprint();
+      return fp.digestAndReset();
     }
 
     @Override
@@ -393,10 +396,10 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     }
 
     @Override
-    public BigInteger getValueFingerprint() {
-      BigIntegerFingerprint fp = new BigIntegerFingerprint();
+    public byte[] getValueFingerprint() {
+      Fingerprint fp = new Fingerprint();
       contentsProxy.addToFingerprint(fp);
-      return fp.getFingerprint();
+      return fp.digestAndReset();
     }
 
     @Override
@@ -407,8 +410,7 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
 
   /** Implementation of {@link FileStateValue} for directories that exist. */
   public static final class DirectoryFileStateValue extends FileStateValue {
-    private static final BigInteger FINGERPRINT =
-        new BigInteger(1, "DirectoryFileStateValue".getBytes(UTF_8));
+    private static final byte[] FINGERPRINT = "DirectoryFileStateValue".getBytes(UTF_8);
 
     private DirectoryFileStateValue() {}
 
@@ -439,7 +441,7 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     }
 
     @Override
-    public BigInteger getValueFingerprint() {
+    public byte[] getValueFingerprint() {
       return FINGERPRINT;
     }
   }
@@ -484,8 +486,8 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     }
 
     @Override
-    public BigInteger getValueFingerprint() {
-      return new BigIntegerFingerprint().addPath(symlinkTarget).getFingerprint();
+    public byte[] getValueFingerprint() {
+      return new Fingerprint().addPath(symlinkTarget).digestAndReset();
     }
 
     @Override
@@ -497,8 +499,7 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
   /** Implementation of {@link FileStateValue} for nonexistent files. */
   @AutoCodec.VisibleForSerialization
   static final class NonexistentFileStateValue extends FileStateValue {
-    private static final BigInteger FINGERPRINT =
-        new BigInteger(1, "NonexistentFileStateValue".getBytes(UTF_8));
+    private static final byte[] FINGERPRINT = "NonexistentFileStateValue".getBytes(UTF_8);
 
     private NonexistentFileStateValue() {}
 
@@ -532,7 +533,7 @@ public abstract class FileStateValue implements HasDigest, SkyValue {
     }
 
     @Override
-    public BigInteger getValueFingerprint() {
+    public byte[] getValueFingerprint() {
       return FINGERPRINT;
     }
   }

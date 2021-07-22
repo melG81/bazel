@@ -74,7 +74,7 @@ class RemoteActionFileSystem extends DelegateFileSystem {
   }
 
   @Override
-  public boolean delete(PathFragment path) throws IOException {
+  protected boolean delete(PathFragment path) throws IOException {
     RemoteFileArtifactValue m = getRemoteInputMetadata(path);
     if (m == null) {
       return super.delete(path);
@@ -320,23 +320,13 @@ class RemoteActionFileSystem extends DelegateFileSystem {
     };
   }
 
-  // -------------------- Implementation Helpers --------------------
-
-  private String execPathString(PathFragment path) {
-    return path.relativeTo(execRoot).getPathString();
-  }
-
   @Nullable
   private RemoteFileArtifactValue getRemoteInputMetadata(PathFragment path) {
     if (!path.startsWith(outputBase)) {
       return null;
     }
-    return getRemoteInputMetadata(execPathString(path));
-  }
-
-  @Nullable
-  private RemoteFileArtifactValue getRemoteInputMetadata(String execPathString) {
-    FileArtifactValue m = inputArtifactData.getMetadata(execPathString);
+    PathFragment execPath = path.relativeTo(execRoot);
+    FileArtifactValue m = inputArtifactData.getMetadata(execPath);
     if (m != null && m.isRemote()) {
       return (RemoteFileArtifactValue) m;
     }

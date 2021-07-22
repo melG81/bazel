@@ -17,7 +17,6 @@ import com.google.auto.value.AutoValue;
 import com.google.common.base.Ascii;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.PlatformOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
@@ -27,12 +26,8 @@ import com.google.devtools.build.lib.analysis.config.InvalidConfigurationExcepti
 import com.google.devtools.build.lib.analysis.config.RequiresOptions;
 import com.google.devtools.build.lib.analysis.starlark.annotations.StarlarkConfigurationField;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.events.Event;
-import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.starlarkbuildapi.java.JavaConfigurationApi;
-import com.google.devtools.common.options.TriState;
 import java.util.Map;
 import java.util.Objects;
 import javax.annotation.Nullable;
@@ -85,7 +80,6 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
   private final boolean generateJavaDeps;
   private final boolean strictDepsJavaProtos;
   private final boolean isDisallowStrictDepsForJpl;
-  private final boolean isDisallowStrictDepsForJlpl;
   private final OneVersionEnforcementLevel enforceOneVersion;
   private final boolean enforceOneVersionOnJavaTests;
   private final ImportDepsCheckingLevel importDepsCheckingLevel;
@@ -97,8 +91,6 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
   private final String fixDepsTool;
   private final Label proguardBinary;
   private final ImmutableList<Label> extraProguardSpecs;
-  private final TriState bundleTranslations;
-  private final ImmutableList<Label> translationTargets;
   private final NamedLabel bytecodeOptimizer;
   private final boolean splitBytecodeOptimizationPass;
   private final boolean enforceProguardFileExtension;
@@ -109,12 +101,12 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
   private final boolean explicitJavaTestDeps;
   private final boolean jplPropagateCcLinkParamsStore;
   private final boolean addTestSupportToCompileTimeDeps;
-  private final boolean isJlplStrictDepsEnforced;
   private final ImmutableList<Label> pluginList;
   private final boolean disallowResourceJars;
   private final boolean disallowLegacyJavaToolchainFlags;
   private final boolean experimentalTurbineAnnotationProcessing;
-  private final boolean dontCollectSoArtifacts;
+  private final boolean experimentalEnableJspecify;
+  private final boolean requireJavaPluginInfo;
 
   // TODO(dmarting): remove once we have a proper solution for #2539
   private final boolean useLegacyBazelJavaTest;
@@ -137,41 +129,22 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     this.extraProguardSpecs = ImmutableList.copyOf(javaOptions.extraProguardSpecs);
     this.splitBytecodeOptimizationPass = javaOptions.splitBytecodeOptimizationPass;
     this.enforceProguardFileExtension = javaOptions.enforceProguardFileExtension;
-    this.bundleTranslations = javaOptions.bundleTranslations;
     this.toolchainLabel = javaOptions.javaToolchain;
     this.runtimeLabel = javaOptions.javaBase;
     this.useLegacyBazelJavaTest = javaOptions.legacyBazelJavaTest;
     this.strictDepsJavaProtos = javaOptions.strictDepsJavaProtos;
     this.isDisallowStrictDepsForJpl = javaOptions.isDisallowStrictDepsForJpl;
-    this.isDisallowStrictDepsForJlpl = javaOptions.isDisallowStrictDepsForJlpl;
     this.enforceOneVersion = javaOptions.enforceOneVersion;
     this.enforceOneVersionOnJavaTests = javaOptions.enforceOneVersionOnJavaTests;
     this.importDepsCheckingLevel = javaOptions.importDepsCheckingLevel;
     this.allowRuntimeDepsOnNeverLink = javaOptions.allowRuntimeDepsOnNeverLink;
     this.explicitJavaTestDeps = javaOptions.explicitJavaTestDeps;
     this.jplPropagateCcLinkParamsStore = javaOptions.jplPropagateCcLinkParamsStore;
-    this.isJlplStrictDepsEnforced = javaOptions.isJlplStrictDepsEnforced;
     this.disallowResourceJars = javaOptions.disallowResourceJars;
     this.addTestSupportToCompileTimeDeps = javaOptions.addTestSupportToCompileTimeDeps;
     this.runAndroidLint = javaOptions.runAndroidLint;
     this.limitAndroidLintToAndroidCompatible = javaOptions.limitAndroidLintToAndroidCompatible;
-    this.dontCollectSoArtifacts = javaOptions.dontCollectSoArtifacts;
-
-    ImmutableList.Builder<Label> translationsBuilder = ImmutableList.builder();
-    for (String s : javaOptions.translationTargets) {
-      try {
-        Label label = Label.parseAbsolute(s, ImmutableMap.of());
-        translationsBuilder.add(label);
-      } catch (LabelSyntaxException e) {
-        throw new InvalidConfigurationException(
-            "Invalid translations target '"
-                + s
-                + "', make "
-                + "sure it uses correct absolute path syntax.",
-            e);
-      }
-    }
-    this.translationTargets = translationsBuilder.build();
+    this.requireJavaPluginInfo = javaOptions.requireJavaPluginInfo;
 
     Map<String, Label> optimizers = javaOptions.bytecodeOptimizers;
     if (optimizers.size() > 1) {
@@ -193,6 +166,7 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     this.disallowLegacyJavaToolchainFlags = javaOptions.disallowLegacyJavaToolchainFlags;
     this.experimentalTurbineAnnotationProcessing =
         javaOptions.experimentalTurbineAnnotationProcessing;
+    this.experimentalEnableJspecify = javaOptions.experimentalEnableJspecify;
 
     if (javaOptions.disallowLegacyJavaToolchainFlags) {
       checkLegacyToolchainFlagIsUnset(
@@ -227,16 +201,6 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return Ascii.toLowerCase(strictJavaDeps.name());
   }
 
-  @Override
-  public void reportInvalidOptions(EventHandler reporter, BuildOptions buildOptions) {
-    if ((bundleTranslations == TriState.YES) && translationTargets.isEmpty()) {
-      reporter.handle(
-          Event.error(
-              "Translations enabled, but no message translations specified. "
-                  + "Use '--message_translations' to select the message translations to use"));
-    }
-  }
-
   /** Returns true iff Java compilation should use ijars. */
   public boolean getUseIjars() {
     return useIjars;
@@ -260,6 +224,7 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return inmemoryJdepsFiles;
   }
 
+  @Override
   public ImmutableList<String> getDefaultJvmFlags() {
     return defaultJvmFlags;
   }
@@ -285,6 +250,11 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
   }
 
   /** @return proper label only if --java_launcher= is specified, otherwise null. */
+  @StarlarkConfigurationField(
+      name = "launcher",
+      doc = "Returns the label provided with --java_launcher, if any.",
+      defaultInToolRepository = true)
+  @Nullable
   public Label getJavaLauncherLabel() {
     return javaLauncherLabel;
   }
@@ -315,21 +285,6 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
   /** Returns whether ProGuard configuration files are required to use a *.pgcfg extension. */
   public boolean enforceProguardFileExtension() {
     return enforceProguardFileExtension;
-  }
-
-  /** Returns the raw translation targets. */
-  public ImmutableList<Label> getTranslationTargets() {
-    return translationTargets;
-  }
-
-  /** Returns true if the we should build translations. */
-  public boolean buildTranslations() {
-    return (bundleTranslations != TriState.NO) && !translationTargets.isEmpty();
-  }
-
-  /** Returns whether translations were explicitly disabled. */
-  public boolean isTranslationsDisabled() {
-    return bundleTranslations == TriState.NO;
   }
 
   /** Returns the label of the default java_toolchain rule */
@@ -375,7 +330,6 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return useLegacyBazelJavaTest;
   }
 
-
   /**
    * Make it mandatory for java_test targets to explicitly declare any JUnit or Hamcrest
    * dependencies instead of accidentally obtaining them from the TestRunner's dependencies.
@@ -393,6 +347,11 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
    */
   public OneVersionEnforcementLevel oneVersionEnforcementLevel() {
     return enforceOneVersion;
+  }
+
+  @Override
+  public String starlarkOneVersionEnforcementLevel() {
+    return oneVersionEnforcementLevel().name();
   }
 
   public boolean enforceOneVersionOnJavaTests() {
@@ -415,20 +374,12 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return isDisallowStrictDepsForJpl;
   }
 
-  public boolean isDisallowStrictDepsForJlpl() {
-    return isDisallowStrictDepsForJlpl;
-  }
-
   public boolean jplPropagateCcLinkParamsStore() {
     return jplPropagateCcLinkParamsStore;
   }
 
   public boolean addTestSupportToCompileTimeDeps() {
     return addTestSupportToCompileTimeDeps;
-  }
-
-  public boolean isJlplStrictDepsEnforced() {
-    return isJlplStrictDepsEnforced;
   }
 
   public boolean runAndroidLint() {
@@ -452,7 +403,11 @@ public final class JavaConfiguration extends Fragment implements JavaConfigurati
     return experimentalTurbineAnnotationProcessing;
   }
 
-  public boolean dontCollectSoArtifacts() {
-    return dontCollectSoArtifacts;
+  public boolean experimentalEnableJspecify() {
+    return experimentalEnableJspecify;
+  }
+
+  public boolean requireJavaPluginInfo() {
+    return requireJavaPluginInfo;
   }
 }

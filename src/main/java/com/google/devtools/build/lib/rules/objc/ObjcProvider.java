@@ -36,7 +36,7 @@ import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.BuiltinProvider.WithLegacyStarlarkName;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.rules.cpp.CcLinkingContext;
-import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
+import com.google.devtools.build.lib.rules.cpp.CcLinkingContext.Linkstamp;
 import com.google.devtools.build.lib.rules.cpp.LibraryToLink;
 import com.google.devtools.build.lib.starlarkbuildapi.apple.ObjcProviderApi;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -123,22 +123,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
       new Key<>(LINK_ORDER, "jre_library", Artifact.class);
 
   /**
-   * Single-architecture linked binaries to be combined for the final multi-architecture binary.
-   */
-  public static final Key<Artifact> LINKED_BINARY =
-      new Key<>(STABLE_ORDER, "linked_binary", Artifact.class);
-
-  /** Combined-architecture binaries to include in the final bundle. */
-  public static final Key<Artifact> MULTI_ARCH_LINKED_BINARIES =
-      new Key<>(STABLE_ORDER, "combined_arch_linked_binary", Artifact.class);
-  /** Combined-architecture dynamic libraries to include in the final bundle. */
-  public static final Key<Artifact> MULTI_ARCH_DYNAMIC_LIBRARIES =
-      new Key<>(STABLE_ORDER, "combined_arch_dynamic_library", Artifact.class);
-  /** Combined-architecture archives to include in the final bundle. */
-  public static final Key<Artifact> MULTI_ARCH_LINKED_ARCHIVES =
-      new Key<>(STABLE_ORDER, "combined_arch_linked_archive", Artifact.class);
-
-  /**
    * Indicates which libraries to load with {@code -force_load}. This is a subset of the union of
    * the {@link #LIBRARY} and {@link #IMPORTED_LIBRARY} sets.
    */
@@ -182,15 +166,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
   public static final Key<Artifact> MODULE_MAP =
       new Key<>(STABLE_ORDER, "module_map", Artifact.class);
 
-  /**
-   * Information about this provider's module map, in the form of a {@link CppModuleMap}. This
-   * is intransitive, and can be used to get just the target's module map to pass to clang or to
-   * get the module maps for direct but not transitive dependencies. You should only add module maps
-   * for this key using {@link Builder#addWithoutPropagating}.
-   */
-  public static final Key<CppModuleMap> TOP_LEVEL_MODULE_MAP =
-      new Key<>(STABLE_ORDER, "top_level_module_map", CppModuleMap.class);
-
   /** The static library files of user-specified static frameworks. */
   public static final Key<Artifact> STATIC_FRAMEWORK_FILE =
       new Key<>(STABLE_ORDER, "static_framework_file", Artifact.class);
@@ -198,18 +173,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
   /** The dynamic library files of user-specified dynamic frameworks. */
   public static final Key<Artifact> DYNAMIC_FRAMEWORK_FILE =
       new Key<>(STABLE_ORDER, "dynamic_framework_file", Artifact.class);
-
-  /**
-   * Debug artifacts that should be exported by the top-level target.
-   */
-  public static final Key<Artifact> EXPORTED_DEBUG_ARTIFACTS =
-      new Key<>(STABLE_ORDER, "exported_debug_artifacts", Artifact.class);
-
-  /**
-   * Single-architecture link map for a binary.
-   */
-  public static final Key<Artifact> LINKMAP_FILE =
-      new Key<>(STABLE_ORDER, "linkmap_file", Artifact.class);
 
   /** Linking information from cc dependencies. */
   public static final Key<LibraryToLink> CC_LIBRARY =
@@ -250,21 +213,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
      * is invoked.
      */
     USES_CPP,
-
-    /** Indicates that Swift dependencies are present. This affects bundling actions. */
-    USES_SWIFT,
-
-    /**
-     * Indicates that a watchOS 1 extension is present in the bundle. (There can only be one
-     * extension for any given watchOS version in a given bundle).
-     */
-    HAS_WATCH1_EXTENSION,
-
-    /**
-     * Indicates that a watchOS 2 extension is present in the bundle. (There can only be one
-     * extension for any given watchOS version in a given bundle).
-     */
-    HAS_WATCH2_EXTENSION,
   }
 
   private final StarlarkSemantics semantics;
@@ -288,7 +236,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
   static final ImmutableList<Key<?>> KEYS_FOR_STARLARK =
       ImmutableList.<Key<?>>of(
           DYNAMIC_FRAMEWORK_FILE,
-          EXPORTED_DEBUG_ARTIFACTS,
           FORCE_LOAD_LIBRARY,
           HEADER,
           IMPORTED_LIBRARY,
@@ -296,13 +243,8 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
           JRE_LIBRARY,
           LIBRARY,
           LINK_INPUTS,
-          LINKED_BINARY,
-          LINKMAP_FILE,
           LINKOPT,
           MODULE_MAP,
-          MULTI_ARCH_DYNAMIC_LIBRARIES,
-          MULTI_ARCH_LINKED_ARCHIVES,
-          MULTI_ARCH_LINKED_BINARIES,
           SDK_DYLIB,
           SDK_FRAMEWORK,
           SOURCE,
@@ -340,11 +282,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
 
   NestedSet<Artifact> dynamicFrameworkFile() {
     return get(DYNAMIC_FRAMEWORK_FILE);
-  }
-
-  @Override
-  public Depset /*<Artifact>*/ exportedDebugArtifacts() {
-    return Depset.of(Artifact.TYPE, get(EXPORTED_DEBUG_ARTIFACTS));
   }
 
   @Override
@@ -394,16 +331,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
   }
 
   @Override
-  public Depset /*<Artifact>*/ linkedBinary() {
-    return Depset.of(Artifact.TYPE, get(LINKED_BINARY));
-  }
-
-  @Override
-  public Depset /*<Artifact>*/ linkmapFile() {
-    return Depset.of(Artifact.TYPE, get(LINKMAP_FILE));
-  }
-
-  @Override
   public Depset /*<String>*/ linkopt() {
     return Depset.of(Depset.ElementType.STRING, get(LINKOPT));
   }
@@ -416,21 +343,6 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
   @Override
   public Sequence<Artifact> directModuleMaps() {
     return getDirect(MODULE_MAP);
-  }
-
-  @Override
-  public Depset /*<Artifact>*/ multiArchDynamicLibraries() {
-    return Depset.of(Artifact.TYPE, get(MULTI_ARCH_DYNAMIC_LIBRARIES));
-  }
-
-  @Override
-  public Depset /*<Artifact>*/ multiArchLinkedArchives() {
-    return Depset.of(Artifact.TYPE, get(MULTI_ARCH_LINKED_ARCHIVES));
-  }
-
-  @Override
-  public Depset /*<Artifact>*/ multiArchLinkedBinaries() {
-    return Depset.of(Artifact.TYPE, get(MULTI_ARCH_LINKED_BINARIES));
   }
 
   @Override
@@ -488,14 +400,12 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
   @VisibleForTesting
   static final ImmutableList<Key<?>> KEYS_NOT_IN_STARLARK =
       ImmutableList.<Key<?>>of(
-          // LibraryToLink not exposed to Starlark.
-          CC_LIBRARY,
           // Flag enum is not exposed to Starlark.
           FLAG,
-          // Linkstamp is not exposed to Starlark. See commentary at its definition.
+          // cc_library is handled specially.
+          CC_LIBRARY,
+          // linkstamp is handled specially.
           LINKSTAMP,
-          // CppModuleMap is not exposed to Starlark.
-          TOP_LEVEL_MODULE_MAP,
           // Strict include is handled specially.
           STRICT_INCLUDE);
 
@@ -802,6 +712,16 @@ public final class ObjcProvider implements Info, ObjcProviderApi<Artifact> {
       paths.add(getFrameworkPath(frameworkDir));
     }
     return paths.build();
+  }
+
+  @Override
+  public Depset /*<LibraryToLink>*/ ccLibrariesForStarlark() {
+    return Depset.of(Artifact.TYPE, get(ObjcProvider.CC_LIBRARY));
+  }
+
+  @Override
+  public Depset /*<Linkstamp>*/ linkstampForstarlark() {
+    return Depset.of(Linkstamp.TYPE, get(ObjcProvider.LINKSTAMP));
   }
 
   @Override

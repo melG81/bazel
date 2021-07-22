@@ -52,7 +52,11 @@ public abstract class FileSystem {
    */
   protected static final class NotASymlinkException extends IOException {
     public NotASymlinkException(PathFragment path) {
-      super(path + " is not a symlink");
+      super(path.getPathString() + " is not a symlink");
+    }
+
+    public NotASymlinkException(PathFragment path, Throwable cause) {
+      super(path.getPathString() + " is not a symlink", cause);
     }
   }
 
@@ -70,9 +74,7 @@ public abstract class FileSystem {
 
   /** Returns an absolute path instance, given an absolute path fragment. */
   public Path getPath(PathFragment pathFragment) {
-    Preconditions.checkArgument(pathFragment.isAbsolute(), "Not absolute: %s", pathFragment);
-    return Path.createAlreadyNormalized(
-        pathFragment.getPathString(), pathFragment.getDriveStrLength(), this);
+    return Path.create(pathFragment, this);
   }
 
   final Root getAbsoluteRoot() {
@@ -176,6 +178,15 @@ public abstract class FileSystem {
   public abstract boolean createDirectory(PathFragment path) throws IOException;
 
   /**
+   * Creates a writable directory at a given path or makes existing directory writable if it is
+   * already present. Returns whether a new directory was created.
+   *
+   * <p>This method is not atomic -- concurrent modifications for the same path will result in
+   * undefined behavior.
+   */
+  protected abstract boolean createWritableDirectory(PathFragment path) throws IOException;
+
+  /**
    * Creates all directories up to the path. See {@link Path#createDirectoryAndParents} for
    * specification.
    */
@@ -192,7 +203,7 @@ public abstract class FileSystem {
   protected abstract long getFileSize(PathFragment path, boolean followSymlinks) throws IOException;
 
   /** Deletes the file denoted by {@code path}. See {@link Path#delete} for specification. */
-  public abstract boolean delete(PathFragment path) throws IOException;
+  protected abstract boolean delete(PathFragment path) throws IOException;
 
   /**
    * Deletes all directory trees recursively beneath the given path and removes that path as well.
@@ -200,7 +211,7 @@ public abstract class FileSystem {
    * @param path the directory hierarchy to remove
    * @throws IOException if the hierarchy cannot be removed successfully
    */
-  public void deleteTree(PathFragment path) throws IOException {
+  protected void deleteTree(PathFragment path) throws IOException {
     deleteTreesBelow(path);
     delete(path);
   }
@@ -218,7 +229,7 @@ public abstract class FileSystem {
    * @param dir the directory hierarchy to remove
    * @throws IOException if the hierarchy cannot be removed successfully
    */
-  public void deleteTreesBelow(PathFragment dir) throws IOException {
+  protected void deleteTreesBelow(PathFragment dir) throws IOException {
     if (isDirectory(dir, /*followSymlinks=*/ false)) {
       Collection<String> entries;
       try {
@@ -356,7 +367,7 @@ public abstract class FileSystem {
     }
 
     if (maxLinks-- == 0) {
-      throw new IOException(naive + " (Too many levels of symbolic links)");
+      throw new FileSymlinkLoopException(naive);
     }
     if (linkTarget.isAbsolute()) {
       dir = PathFragment.createAlreadyNormalized(linkTarget.getDriveStr());
@@ -727,6 +738,16 @@ public abstract class FileSystem {
       throws IOException;
 
   /**
+   * Creates an OutputStream accessing the file denoted by path.
+   *
+   * @param append whether to open the output stream in append mode
+   * @param internal whether the file is a Bazel internal file
+   * @throws IOException if there was an error opening the file for writing
+   */
+  protected abstract OutputStream getOutputStream(
+      PathFragment path, boolean append, boolean internal) throws IOException;
+
+  /**
    * Renames the file denoted by "sourceNode" to the location "targetNode". See {@link
    * Path#renameTo} for specification.
    */
@@ -776,4 +797,5 @@ public abstract class FileSystem {
    * implement this in order to warm the filesystem's internal caches.
    */
   protected void prefetchPackageAsync(PathFragment path, int maxDirs) {}
+
 }

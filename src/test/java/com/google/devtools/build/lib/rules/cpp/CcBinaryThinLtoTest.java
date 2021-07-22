@@ -25,7 +25,6 @@ import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.ConfiguredTargetValue;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
@@ -35,6 +34,7 @@ import com.google.devtools.build.lib.packages.util.Crosstool.CcToolchainConfig;
 import com.google.devtools.build.lib.packages.util.MockCcSupport;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.Tool;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.RuleConfiguredTargetValue;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import java.util.List;
@@ -192,8 +192,8 @@ public class CcBinaryThinLtoTest extends BuildViewTestCase {
 
     CppLinkAction indexAction = getIndexAction(backendAction);
 
-    ConfiguredTargetValue configuredTargetValue =
-        (ConfiguredTargetValue)
+    RuleConfiguredTargetValue configuredTargetValue =
+        (RuleConfiguredTargetValue)
             getSkyframeExecutor()
                 .getEvaluatorForTesting()
                 .getExistingEntryAtCurrentlyEvaluatingVersion(
@@ -1633,6 +1633,9 @@ public class CcBinaryThinLtoTest extends BuildViewTestCase {
     String expectedCompilerFlag = "-fbasic-block-sections=list=.*/cc_profile.txt";
     assertThat(Joiner.on(" ").join(backendAction.getArguments()))
         .containsMatch(expectedCompilerFlag);
+    String expectedBuildTypeFlag = "-DBUILD_PROPELLER_TYPE=\"full\"";
+    assertThat(Joiner.on(" ").join(backendAction.getArguments()))
+        .containsMatch(expectedBuildTypeFlag);
     assertThat(ActionsTestUtil.baseArtifactNames(backendAction.getInputs()))
         .contains("cc_profile.txt");
   }
@@ -1673,6 +1676,9 @@ public class CcBinaryThinLtoTest extends BuildViewTestCase {
     String expectedCompilerFlag = "-fbasic-block-sections=list=.*/cc_profile.txt";
     assertThat(Joiner.on(" ").join(backendAction.getArguments()))
         .containsMatch(expectedCompilerFlag);
+    String expectedBuildTypeFlag = "-DBUILD_PROPELLER_TYPE=\"full\"";
+    assertThat(Joiner.on(" ").join(backendAction.getArguments()))
+        .containsMatch(expectedBuildTypeFlag);
     assertThat(ActionsTestUtil.baseArtifactNames(backendAction.getInputs()))
         .contains("cc_profile.txt");
   }

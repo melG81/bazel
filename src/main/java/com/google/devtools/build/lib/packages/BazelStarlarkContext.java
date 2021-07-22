@@ -14,9 +14,11 @@
 
 package com.google.devtools.build.lib.packages;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
+
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.lib.analysis.RuleDefinitionContext;
+import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import java.util.HashMap;
@@ -27,7 +29,10 @@ import net.starlark.java.eval.StarlarkThread;
 
 /** Contextual information associated with each Starlark thread created by Bazel. */
 // TODO(adonovan): rename BazelThreadContext, for symmetry with BazelModuleContext.
-public final class BazelStarlarkContext implements RuleDefinitionContext, Label.HasRepoMapping {
+public final class BazelStarlarkContext
+    implements RuleDefinitionEnvironment,
+        Label.HasRepoMapping,
+        StarlarkThread.UncheckedExceptionContext {
 
   /** The phase to which this Starlark thread belongs. */
   public enum Phase {
@@ -45,6 +50,7 @@ public final class BazelStarlarkContext implements RuleDefinitionContext, Label.
   public void storeInThread(StarlarkThread thread) {
     thread.setThreadLocal(BazelStarlarkContext.class, this);
     thread.setThreadLocal(Label.HasRepoMapping.class, this);
+    thread.setUncheckedExceptionContext(this);
   }
 
   private final Phase phase;
@@ -88,18 +94,13 @@ public final class BazelStarlarkContext implements RuleDefinitionContext, Label.
       HashMap<String, Label> convertedLabelsInPackage,
       SymbolGenerator<?> symbolGenerator,
       @Nullable Label analysisRuleLabel) {
-    this.phase = phase;
+    this.phase = Preconditions.checkNotNull(phase);
     this.toolsRepository = toolsRepository;
     this.fragmentNameToClass = fragmentNameToClass;
     this.repoMapping = repoMapping;
     this.convertedLabelsInPackage = convertedLabelsInPackage;
     this.symbolGenerator = Preconditions.checkNotNull(symbolGenerator);
     this.analysisRuleLabel = analysisRuleLabel;
-  }
-
-  /** Returns the phase to which this Starlark thread belongs. */
-  public Phase getPhase() {
-    return phase;
   }
 
   /** Returns the name of the tools repository, such as "@bazel_tools". */
@@ -145,6 +146,11 @@ public final class BazelStarlarkContext implements RuleDefinitionContext, Label.
   @Nullable
   public Label getAnalysisRuleLabel() {
     return analysisRuleLabel;
+  }
+
+  @Override
+  public String getContextForUncheckedException() {
+    return firstNonNull(analysisRuleLabel, phase).toString();
   }
 
   /**

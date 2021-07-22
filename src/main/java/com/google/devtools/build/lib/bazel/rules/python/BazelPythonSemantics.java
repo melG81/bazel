@@ -75,7 +75,7 @@ public class BazelPythonSemantics implements PythonSemantics {
   @Override
   public String getSrcsVersionDocURL() {
     // TODO(#8996): Update URL to point to rules_python's docs instead of the Bazel site.
-    return "https://docs.bazel.build/versions/master/be/python.html#py_binary.srcs_version";
+    return "https://docs.bazel.build/versions/main/be/python.html#py_binary.srcs_version";
   }
 
   @Override
@@ -167,6 +167,7 @@ public class BazelPythonSemantics implements PythonSemantics {
             stubOutput,
             STUB_TEMPLATE,
             ImmutableList.of(
+                Substitution.of("%shebang%", getStubShebang(ruleContext, common)),
                 Substitution.of(
                     "%main%", common.determineMainExecutableSource(/*withWorkspaceName=*/ true)),
                 Substitution.of("%python_binary%", pythonBinary),
@@ -449,6 +450,15 @@ public class BazelPythonSemantics implements PythonSemantics {
     }
 
     return pythonBinary;
+  }
+
+  private static String getStubShebang(RuleContext ruleContext, PyCommon common) {
+    PyRuntimeInfo provider = getRuntime(ruleContext, common);
+    if (provider != null) {
+      return provider.getStubShebang();
+    } else {
+      return PyRuntimeInfo.DEFAULT_STUB_SHEBANG;
+    }
   }
 
   @Override

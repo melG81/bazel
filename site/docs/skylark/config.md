@@ -7,10 +7,9 @@ category: extending
 # Configurations
 
 
-This page covers the benefits and basic usage of Starlark configurations. It
-includes how to define build settings and provides examples.
-
-Starlark configuration is Bazel's API for customizing how your project builds.
+This page covers the benefits and basic usage of Starlark configurations,
+Bazel's API for customizing how your project builds. It includes how to define
+build settings and provides examples.
 
 This makes it possible to:
 
@@ -25,7 +24,7 @@ This makes it possible to:
 
 and more, all completely from .bzl files (no Bazel release required). See the
 `bazelbuild/examples` repo for
-[examples](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations).
+[examples](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations).
 
 <!-- [TOC] -->
 
@@ -48,7 +47,7 @@ set via [user-defined transitions](#user-defined-transitions).
 
 ### Defining build settings
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/basic_build_setting)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/basic_build_setting)
 
 #### The `build_setting` `rule()` parameter
 
@@ -80,7 +79,7 @@ writer have some debug mode that you'd like to turn on inside test rules,
 you don't want to give users the ability to indiscriminately turn on that
 feature inside other non-test rules.
 
-#### Using `ctx.build_setting_value`
+#### Using ctx.build_setting_value
 
 Like all rules, build setting rules have [implementation functions](rules.html#implementation-function).
 The basic Starlark-type value of the build settings can be accessed via the
@@ -145,8 +144,8 @@ $ bazel build //my/target --//example:roasts=blonde \
     --//example:roasts=medium,dark
 ```
 
-The above will be parsed to {//example:roasts:["blonde", "medium,dark"]} and
-`ctx.build_setting_value` will return a list ["blonde", "medium,dark"].
+The above is parsed to `{"//example:roasts": ["blonde", "medium,dark"]}` and
+`ctx.build_setting_value` returns the list `["blonde", "medium,dark"]`.
 
 #### Instantiating build settings
 
@@ -178,7 +177,7 @@ flavor(
 
 ### Predefined settings
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/use_skylib_build_setting)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/use_skylib_build_setting)
 
 The
 [Skylib](https://github.com/bazelbuild/bazel-skylib)
@@ -198,7 +197,7 @@ string_flag(
 ```
 
 For a complete list, see
-[Common build setting rules](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/common_settings.bzl).
+[Common build setting rules](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/common_settings.bzl).
 
 ### Using build settings
 
@@ -318,7 +317,7 @@ in a `.bazelrc` reduces command line clutter.
 
 ### Label-typed build settings
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/label_typed_build_setting)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/label_typed_build_setting)
 
 Unlike other build settings, label-typed settings cannot be defined using the
 `build_setting` rule parameter. Instead, bazel has two built-in rules:
@@ -372,9 +371,9 @@ label_flag(
 
 TODO(bazel-team): Expand supported build setting types.
 
-### Build settings and `select()`
+### Build settings and select()
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/select_on_build_setting)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/select_on_build_setting)
 
 Users can configure attributes on build settings by using
  [`select()`](../be/functions.html#select). Build setting targets can be passed to the `flag_values` attribute of
@@ -395,8 +394,8 @@ config_setting(
 
 A configuration
 [transition](lib/transition.html#transition)
-is how we change configuration of
-configured targets in the build graph.
+maps the transformation from one configured target to another within the
+build graph.
 
 > IMPORTANT: Transitions have [memory and performance impact](#memory-and-performance-considerations).
 > Rules that set them must include a special attribute:
@@ -476,7 +475,7 @@ be explicitly passed through in the returned dictionary.
 
 ### Defining 1:2+ transitions
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/multi_arch_binary)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/multi_arch_binary)
 
 [Outgoing edge transition](#outgoing-edge-transitions) can map a single input
 configuration to two or more output configurations. These are defined in
@@ -501,7 +500,7 @@ coffee_transition = transition(
 
 ### Attaching transitions
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/attaching_transitions_to_rules)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/attaching_transitions_to_rules)
 
 Transitions can be attached in two places: incoming edges and outgoing edges.
 Effectively this means rules can transition their own configuration (incoming
@@ -511,7 +510,7 @@ edge transition).
 NOTE: There is currently no way to attach Starlark transitions to native rules.
 If you need to do this, contact
 bazel-discuss@googlegroups.com
-and we can help you try to figure out a workaround.
+for help with figuring out workarounds.
 
 ### Incoming edge transitions
 Incoming edge transitions are activated by attaching a `transition` object
@@ -544,12 +543,12 @@ Outgoing edge transitions can be 1:1 or 1:2+.
 
 ### Transitions on native options
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/transition_on_native_flag)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/transition_on_native_flag)
 
-WARNING: Long term, we plan to reimplement all native options as build settings.
-When that happens, this syntax will be deprecated. Currently other issues are
-blocking that migration but be aware you may have to migrate your transitions
-at some point in the future.
+WARNING: Long term, the plan is to reimplement all native options as build
+settings. When that happens, this syntax will be deprecated. Currently other
+issues are blocking that migration but be aware you may have to migrate your
+transitions at some point in the future.
 
 Starlark transitions can also declare reads and writes on native build
 configuration options via a special prefix to the option name.
@@ -568,23 +567,23 @@ cpu_transition = transition(
 
 #### Unsupported native options
 
-Bazel doesn't support transitioning on `--define` using
-`"//command_line_option:define"`. Instead, create a custom
-[build setting](#users-defined-build-settings)
-to cover this functionality. In general, any new usage of `--define`, such as in
-select() statements, is discouraged in favor of build settings.
+Bazel doesn't support transitioning on `--define` with
+`"//command_line_option:define"`. Instead, use a custom
+[build setting](#user-defined-build-settings). In general, new usages of
+`--define` are discouraged in favor of build settings.
 
-Bazel doesn't support transitioning on options that expand to other options such
-as `--config`. One, option expansion happens at the
-beginning of the build so Starlark transitions have no access to that logic.
-Two, `--config` can be used to set options that aren't part of the build
-configuration which cannot be set by transitions. An example of this is execution options
-like
-[`--spawn_strategy`](https://docs.bazel.build/versions/master/user-manual.html#flag--spawn_strategy)
-. A workaround is to manually expand the option in the starlark transition by
-setting the individual flags to their appropriate values. Unfortunately this
-requires maintaining the expansion in two places. Note that this workaround
-does not allow for command-specific behavior like `--config` does.
+Bazel doesn't support transitioning on `--config`. This is because `--config` is
+an "expansion" flag that expands to other flags.
+
+Crucially, `--config` may include flags that don't affect build configuration,
+such as
+[`--spawn_strategy`](https://docs.bazel.build/versions/main/user-manual.html#flag--spawn_strategy)
+. Bazel, by design, can't bind such flags to individual targets. This means
+there's no coherent way to apply them in transitions.
+
+As a workaround, you can explicitly itemize the flags that *are* part of
+the configuration in your transition. This requires maintaining the `--config`'s
+expansion in two places, which is a known UI blemish.
 
 ### Transitions on allow multiple build settings
 
@@ -619,10 +618,38 @@ coffee_transition = transition(
 )
 ```
 
+### No-op transitions
+
+If a transition returns `{}`, `[]`, or `None`, this is shorthand for keeping all
+settings at their original values. This can be more convenient than explicitly
+setting each output to itself.
+
+```python
+# example/transitions/transitions.bzl
+def _impl(settings, attr):
+    _ignore = (attr)
+    if settings["//example:already_chosen"] is True:
+      return {}
+    return {
+      "//example:favorite_flavor": "dark chocolate",
+      "//example:include_marshmallows": "yes",
+      "//example:desired_temperature": "38C",
+    }
+
+hot_chocolate_transition = transition(
+    implementation = _impl,
+    inputs = ["//example:already_chosen"],
+    outputs = [
+        "//example:favorite_flavor",
+        "//example:include_marshmallows",
+        "//example:desired_temperature",
+    ]
+)
+```
 
 ### Accessing attributes with transitions
 
-[End to end example](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations/read_attr_in_transition)
+[End to end example](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations/read_attr_in_transition)
 
 When [attaching a transition to an outgoing edge](#outgoing-edge-transitions)
 (regardless of whether the transition is a 1:1 or 1:2+ transition) access to
@@ -665,13 +692,7 @@ Access to the value of a single branch of a 1:2+
 Many native flags today, like `--cpu` and `--crosstool_top` are related to
 toolchain resolution. In the future, explicit transitions on these types of
 flags will likely be replaced by transitioning on the
-[target platform](../platforms.html)
-
-## Also see
-
- * [Starlark Build Configuration](https://docs.google.com/document/d/1vc8v-kXjvgZOdQdnxPTaV0rrLxtP2XwnD2tAZlYJOqw/edit?usp=sharing)
- * [Bazel Configurability Roadmap](https://bazel.build/roadmaps/configuration.html)
- * Full [set](https://github.com/bazelbuild/examples/tree/master/rules/starlark_configurations) of end to end examples
+[target platform](../platforms.html).
 
 ## Memory and performance considerations
 
@@ -724,3 +745,11 @@ This makes the build graph exponentially larger than the target graph, with
 corresponding memory and performance consequences.
 
 TODO: Add strategies for measurement and mitigation of these issues.
+
+## Further reading
+
+For more details on modifying build configurations, see:
+
+ * [Starlark Build Configuration](https://docs.google.com/document/d/1vc8v-kXjvgZOdQdnxPTaV0rrLxtP2XwnD2tAZlYJOqw/edit?usp=sharing)
+ * [Bazel Configurability Roadmap](https://bazel.build/roadmaps/configuration.html)
+ * Full [set](https://github.com/bazelbuild/examples/tree/HEAD/rules/starlark_configurations) of end to end examples

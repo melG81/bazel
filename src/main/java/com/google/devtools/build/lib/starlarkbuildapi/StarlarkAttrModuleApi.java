@@ -92,7 +92,7 @@ public interface StarlarkAttrModuleApi extends StarlarkValue {
   String CONFIGURATION_ARG = "cfg";
   // TODO(b/151742236): Update when new Starlark-based configuration framework is implemented.
   String CONFIGURATION_DOC =
-      "<a href=\"https://docs.bazel.build/versions/master/skylark/rules.html#configurations\">"
+      "<a href=\"https://docs.bazel.build/versions/main/skylark/rules.html#configurations\">"
           + "Configuration</a> of the attribute. It can be either <code>\"host\"</code>, "
           + "<code>\"exec\"</code>, or <code>\"target\"</code>.";
 
@@ -327,6 +327,14 @@ public interface StarlarkAttrModuleApi extends StarlarkValue {
             named = true,
             positional = false,
             doc = ASPECTS_ARG_DOC),
+        @Param(
+            name = FLAGS_ARG,
+            defaultValue = "unbound",
+            allowedTypes = {@ParamType(type = Sequence.class, generic1 = String.class)},
+            named = true,
+            positional = false,
+            documented = false,
+            doc = FLAGS_DOC)
       },
       useStarlarkThread = true)
   Descriptor labelAttribute(
@@ -340,6 +348,7 @@ public interface StarlarkAttrModuleApi extends StarlarkValue {
       Object allowRules,
       Object cfg,
       Sequence<?> aspects,
+      Object flags, // Sequence<String> expected
       StarlarkThread thread)
       throws EvalException;
 

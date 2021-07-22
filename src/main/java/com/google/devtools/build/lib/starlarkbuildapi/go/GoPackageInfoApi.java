@@ -21,9 +21,11 @@ import com.google.devtools.build.lib.starlarkbuildapi.FileApi;
 import com.google.devtools.build.lib.starlarkbuildapi.core.ProviderApi;
 import com.google.devtools.build.lib.starlarkbuildapi.core.StructApi;
 import net.starlark.java.annot.Param;
+import net.starlark.java.annot.ParamType;
 import net.starlark.java.annot.StarlarkBuiltin;
 import net.starlark.java.annot.StarlarkMethod;
 import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.NoneType;
 import net.starlark.java.eval.Sequence;
 
 /** Contains the metadata for a Go package. Used to generate .gopackage files. */
@@ -42,15 +44,30 @@ public interface GoPackageInfoApi extends StructApi {
         name = PROVIDER_NAME,
         documented = false,
         parameters = {
-          @Param(name = "non_proto_library_label", positional = false, named = true),
+          @Param(name = "label", positional = false, named = true),
           @Param(name = "srcs", positional = false, named = true),
-          @Param(name = "export_data", positional = false, named = true),
+          @Param(
+              name = "export_data",
+              positional = false,
+              named = true,
+              allowedTypes = {@ParamType(type = FileApi.class), @ParamType(type = NoneType.class)}),
           @Param(name = "imports", positional = false, named = true),
+          @Param(name = "test", positional = false, named = true),
+          @Param(
+              name = "is_proto_library",
+              positional = false,
+              named = true,
+              defaultValue = "False"),
         },
         selfCall = true)
     @StarlarkConstructor
-    GoPackageInfoApi createGoAppEngineInfo(
-        Label nonProtoLibraryLabel, Sequence<?> srcs, FileApi exportData, Sequence<?> imports)
+    GoPackageInfoApi createGoPackageInfo(
+        Label nonProtoLibraryLabel,
+        Sequence<?> srcs,
+        Object exportDataObject,
+        Sequence<?> imports,
+        boolean test,
+        boolean isProtolibrary)
         throws EvalException;
   }
 }

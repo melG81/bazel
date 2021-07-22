@@ -22,21 +22,18 @@ import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.ToolchainCollection;
-import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.ComputedToolchainContexts;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionException;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-import java.util.function.Supplier;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -59,7 +56,6 @@ import org.junit.runners.JUnit4;
  * because that method needs a {@link SkyFunction.Environment} and Blaze's test infrastructure
  * doesn't support direct access to environments.
  */
-@TestSpec(size = Suite.SMALL_TESTS)
 @RunWith(JUnit4.class)
 public class ToolchainsForTargetsTest extends AnalysisTestCase {
   /** Returns a {@link SkyKey} for a given <Target, BuildConfiguration> pair. */
@@ -104,13 +100,9 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
             "CONFIGURED_TARGET_FUNCTION_COMPUTE_UNLOADED_TOOLCHAIN_CONTEXTS");
 
     private final LateBoundStateProvider stateProvider;
-    private final Supplier<BuildOptions> buildOptionsSupplier;
 
-    ComputeUnloadedToolchainContextsFunction(
-        LateBoundStateProvider lateBoundStateProvider,
-        Supplier<BuildOptions> buildOptionsSupplier) {
+    ComputeUnloadedToolchainContextsFunction(LateBoundStateProvider lateBoundStateProvider) {
       this.stateProvider = lateBoundStateProvider;
-      this.buildOptionsSupplier = buildOptionsSupplier;
     }
 
     @Override
@@ -118,14 +110,18 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
         throws ComputeUnloadedToolchainContextsException, InterruptedException {
       try {
         Key key = (Key) skyKey.argument();
-        ToolchainCollection<UnloadedToolchainContext> toolchainCollection =
+        ComputedToolchainContexts result =
             ConfiguredTargetFunction.computeUnloadedToolchainContexts(
                 env,
                 stateProvider.lateBoundRuleClassProvider(),
-                buildOptionsSupplier.get(),
                 key.targetAndConfiguration(),
                 key.configuredTargetKey().getToolchainContextKey());
-        return env.valuesMissing() ? null : Value.create(toolchainCollection);
+        if (env.valuesMissing()) {
+          return null;
+        }
+        ToolchainCollection<UnloadedToolchainContext> toolchainCollection =
+            result.toolchainCollection;
+        return Value.create(toolchainCollection);
       } catch (ToolchainException e) {
         throw new ComputeUnloadedToolchainContextsException(e);
       }
@@ -162,15 +158,10 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
    */
   private static final class AnalysisMockWithComputeDepsFunction extends AnalysisMock.Delegate {
     private final LateBoundStateProvider stateProvider;
-    private final Supplier<BuildOptions> defaultBuildOptions;
 
-    AnalysisMockWithComputeDepsFunction(
-        AnalysisMock parent,
-        LateBoundStateProvider stateProvider,
-        Supplier<BuildOptions> defaultBuildOptions) {
+    AnalysisMockWithComputeDepsFunction(AnalysisMock parent, LateBoundStateProvider stateProvider) {
       super(parent);
       this.stateProvider = stateProvider;
-      this.defaultBuildOptions = defaultBuildOptions;
     }
 
     @Override
@@ -180,7 +171,7 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
           .putAll(super.getSkyFunctions(directories))
           .put(
               ComputeUnloadedToolchainContextsFunction.SKYFUNCTION_NAME,
-              new ComputeUnloadedToolchainContextsFunction(stateProvider, defaultBuildOptions))
+              new ComputeUnloadedToolchainContextsFunction(stateProvider))
           .build();
     }
   }
@@ -188,9 +179,7 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
   @Override
   protected AnalysisMock getAnalysisMock() {
     return new AnalysisMockWithComputeDepsFunction(
-        super.getAnalysisMock(),
-        new LateBoundStateProvider(),
-        () -> skyframeExecutor.getDefaultBuildOptions());
+        super.getAnalysisMock(), new LateBoundStateProvider());
   }
 
   public ToolchainCollection<UnloadedToolchainContext> getToolchainCollection(
@@ -204,13 +193,11 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
     // Analysis phase ended after the update() call in getToolchainCollection. We must re-enable
     // analysis so we can call ConfiguredTargetFunction again without raising an error.
     skyframeExecutor.getSkyframeBuildView().enableAnalysis(true);
-    Object evalResult =
+    EvaluationResult<Value> evalResult =
         SkyframeExecutorTestUtils.evaluate(skyframeExecutor, key, /*keepGoing=*/ false, reporter);
     // Test call has finished, to reset the state.
     skyframeExecutor.getSkyframeBuildView().enableAnalysis(false);
-    @SuppressWarnings("unchecked")
-    SkyValue value = ((EvaluationResult<Value>) evalResult).get(key);
-    return ((Value) value).getToolchainCollection();
+    return evalResult.get(key).getToolchainCollection();
   }
 
   public ToolchainCollection<UnloadedToolchainContext> getToolchainCollection(String targetLabel)
@@ -368,7 +355,6 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
         "load('//toolchain:exec_group_rule.bzl', 'my_exec_group_rule')",
         "my_exec_group_rule(name = 'a')");
 
-    useConfiguration("--experimental_exec_groups");
     ToolchainCollection<UnloadedToolchainContext> toolchainCollection =
         getToolchainCollection("//a");
     assertThat(toolchainCollection).isNotNull();
@@ -428,7 +414,7 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
         "load('//toolchain:exec_group_rule.bzl', 'my_exec_group_rule')",
         "my_exec_group_rule(name = 'a')");
 
-    useConfiguration("--experimental_exec_groups", "--extra_toolchains=//extra:toolchain");
+    useConfiguration("--extra_toolchains=//extra:toolchain");
     ToolchainCollection<UnloadedToolchainContext> toolchainCollection =
         getToolchainCollection("//a");
     assertThat(toolchainCollection).isNotNull();
@@ -451,43 +437,47 @@ public class ToolchainsForTargetsTest extends AnalysisTestCase {
 
   @Test
   public void keepParentToolchainContext() throws Exception {
+    // Add some platforms and custom constraints.
     scratch.file(
-        "extra/BUILD",
-        "load('//toolchain:toolchain_def.bzl', 'test_toolchain')",
-        "toolchain_type(name = 'extra_toolchain')",
-        "toolchain(",
-        "    name = 'toolchain',",
-        "    toolchain_type = '//extra:extra_toolchain',",
-        "    exec_compatible_with = [],",
-        "    target_compatible_with = [],",
-        "    toolchain = ':toolchain_impl')",
-        "test_toolchain(",
-        "    name='toolchain_impl',",
-        "    data = 'foo')");
+        "platforms/BUILD",
+        "constraint_setting(name = 'local_setting')",
+        "constraint_value(name = 'local_value_a', constraint_setting = ':local_setting')",
+        "constraint_value(name = 'local_value_b', constraint_setting = ':local_setting')",
+        "platform(name = 'local_platform_a',",
+        "    constraint_values = [':local_value_a'],",
+        ")",
+        "platform(name = 'local_platform_b',",
+        "    constraint_values = [':local_value_b'],",
+        ")");
+
+    // Test normal resolution, and with a per-target exec constraint.
     scratch.file("a/BUILD", "load('//toolchain:rule.bzl', 'my_rule')", "my_rule(name = 'a')");
 
-    useConfiguration("--extra_toolchains=//extra:toolchain");
+    useConfiguration(
+        "--extra_execution_platforms=//platforms:local_platform_a,//platforms:local_platform_b");
+
     ConfiguredTarget target = Iterables.getOnlyElement(update("//a").getTargetsToBuild());
+    ToolchainContextKey parentKey =
+        ToolchainContextKey.key()
+            .configurationKey(target.getConfigurationKey())
+            // Force the constraint label, to make the exec platform be local_platform_b.
+            .execConstraintLabels(Label.parseAbsoluteUnchecked("//platforms:local_value_b"))
+            .build();
     ToolchainCollection<UnloadedToolchainContext> toolchainCollection =
         getToolchainCollection(
             target,
             ConfiguredTargetKey.builder()
                 .setLabel(target.getOriginalLabel())
                 .setConfigurationKey(target.getConfigurationKey())
-                .setToolchainContextKey(
-                    ToolchainContextKey.key()
-                        .configurationKey(target.getConfigurationKey())
-                        .requiredToolchainTypeLabels(
-                            Label.parseAbsoluteUnchecked("//extra:extra_toolchain"))
-                        .build())
+                .setToolchainContextKey(parentKey)
                 .build());
 
     assertThat(toolchainCollection).isNotNull();
     assertThat(toolchainCollection).hasDefaultExecGroup();
+
+    // This should have the same exec platform as parentToolchainKey, which is local_platform_b.
     assertThat(toolchainCollection)
         .defaultToolchainContext()
-        .hasToolchainType("//extra:extra_toolchain");
-    // These should be cleared out.
-    assertThat(toolchainCollection).defaultToolchainContext().resolvedToolchainLabels().isEmpty();
+        .hasExecutionPlatform("//platforms:local_platform_b");
   }
 }

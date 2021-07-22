@@ -17,9 +17,9 @@ package com.google.devtools.build.lib.starlark;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.common.truth.Truth8.assertThat;
-import static com.google.devtools.build.lib.analysis.ToolchainCollection.DEFAULT_EXEC_GROUP_NAME;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
+import static com.google.devtools.build.lib.packages.ExecGroup.DEFAULT_EXEC_GROUP_NAME;
 import static org.junit.Assert.assertThrows;
 
 import com.google.common.base.Joiner;
@@ -32,12 +32,12 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.ActionsProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.ExecGroupCollection;
 import com.google.devtools.build.lib.analysis.ResolvedToolchainContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.actions.FileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.StarlarkAction;
 import com.google.devtools.build.lib.analysis.configuredtargets.FileConfiguredTarget;
+import com.google.devtools.build.lib.analysis.starlark.StarlarkExecGroupCollection;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.analysis.util.MockRule;
@@ -706,6 +706,12 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
   public void testGetRuleAttributeBadAttributeName() throws Exception {
     setRuleContext(createRuleContext("//foo:foo"));
     ev.checkEvalErrorContains("No attribute 'bad'", "ruleContext.attr.bad");
+  }
+
+  @Test
+  public void testGetRuleAttributeNoAspectHints() throws Exception {
+    setRuleContext(createRuleContext("//foo:foo"));
+    ev.checkEvalErrorContains("No attribute 'aspect_hints'", "ruleContext.attr.aspect_hints");
   }
 
   @Test
@@ -1514,6 +1520,10 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
 
   @Test
   public void testExternalWorkspaceLoad() throws Exception {
+    // RepositoryDelegatorFunction deletes and creates symlink for the repository and as such is not
+    // safe to execute in parallel. Disable checks with package loader to avoid parallel
+    // evaluations.
+    initializeSkyframeExecutor(/*doPackageLoadingChecks=*/ false);
     scratch.file(
         "/r1/BUILD",
         "filegroup(name = 'test',",
@@ -1823,6 +1833,108 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
     assertThat(rootSymlinkFilenames).isInstanceOf(Sequence.class);
     Sequence<?> rootSymlinkFilenamesList = (Sequence) rootSymlinkFilenames;
     assertThat(rootSymlinkFilenamesList).containsExactly("test/a.py").inOrder();
+  }
+
+  @Test
+  public void runfiles_merge() throws Exception {
+    scratch.file("test/a.py");
+    scratch.file("test/b.py");
+    scratch.file("test/other.py");
+    scratch.file(
+        "test/rule.bzl",
+        "def symlink_merge_impl(ctx):",
+        "  runfiles = ctx.runfiles(symlinks = {",
+        "    'symlink_' + ctx.file.symlink.short_path: ctx.file.symlink",
+        "  })",
+        "  if ctx.attr.dep:",
+        "    runfiles = runfiles.merge(ctx.attr.dep[DefaultInfo].default_runfiles)",
+        "  return DefaultInfo(",
+        "    runfiles = runfiles",
+        "  )",
+        "symlink_merge_rule = rule(",
+        "  implementation = symlink_merge_impl,",
+        "  attrs = {",
+        "    'symlink': attr.label(allow_single_file=True),",
+        "    'dep': attr.label(),",
+        "  },",
+        ")");
+    scratch.file(
+        "test/BUILD",
+        "load('//test:rule.bzl', 'symlink_merge_rule')",
+        "symlink_merge_rule(name = 'lib_a', symlink = ':a.py', dep = 'lib_b')",
+        "symlink_merge_rule(name = 'lib_b', symlink = ':b.py')",
+        "sh_binary(",
+        "  name = 'test',",
+        "  srcs = ['test/other.py'],",
+        "  data = [':lib_a'],",
+        ")");
+    setRuleContext(createRuleContext("//test:test"));
+    Object symlinkPaths =
+        ev.eval("[s.path for s in ruleContext.attr.data[0].data_runfiles.symlinks.to_list()]");
+    assertThat(symlinkPaths).isInstanceOf(Sequence.class);
+    Sequence<?> symlinkPathsList = (Sequence) symlinkPaths;
+    assertThat(symlinkPathsList)
+        .containsExactly("symlink_test/a.py", "symlink_test/b.py")
+        .inOrder();
+  }
+
+  @Test
+  public void runfiles_mergeAll() throws Exception {
+    scratch.file("test/a.py");
+    scratch.file("test/b.py");
+    scratch.file("test/c.py");
+    scratch.file("test/other.py");
+    scratch.file(
+        "test/rule.bzl",
+        "def symlink_merge_all_impl(ctx):",
+        "  runfiles = ctx.runfiles(symlinks = {",
+        "    'symlink_' + ctx.file.symlink.short_path: ctx.file.symlink",
+        "  })",
+        "  if ctx.attr.deps:",
+        "    runfiles = runfiles.merge_all([dep[DefaultInfo].default_runfiles",
+        "                                   for dep in ctx.attr.deps])",
+        "  return DefaultInfo(",
+        "    runfiles = runfiles",
+        "  )",
+        "symlink_merge_all_rule = rule(",
+        "  implementation = symlink_merge_all_impl,",
+        "  attrs = {",
+        "    'symlink': attr.label(allow_single_file=True),",
+        "    'deps': attr.label_list(),",
+        "  },",
+        ")");
+    scratch.file(
+        "test/BUILD",
+        "load('//test:rule.bzl', 'symlink_merge_all_rule')",
+        "symlink_merge_all_rule(name = 'lib_a', symlink = ':a.py', deps = [':lib_b', ':lib_c'])",
+        "symlink_merge_all_rule(name = 'lib_b', symlink = ':b.py')",
+        "symlink_merge_all_rule(name = 'lib_c', symlink = ':c.py')",
+        "sh_binary(",
+        "  name = 'test',",
+        "  srcs = ['test/other.py'],",
+        "  data = [':lib_a'],",
+        ")");
+    setRuleContext(createRuleContext("//test:test"));
+    Object symlinkPaths =
+        ev.eval("[s.path for s in ruleContext.attr.data[0].data_runfiles.symlinks.to_list()]");
+    assertThat(symlinkPaths).isInstanceOf(Sequence.class);
+    Sequence<?> symlinkPathsList = Sequence.cast(symlinkPaths, String.class, "symlinkPaths");
+    assertThat(symlinkPathsList)
+        .containsExactly("symlink_test/a.py", "symlink_test/b.py", "symlink_test/c.py")
+        .inOrder();
+  }
+
+  @Test
+  public void runfiles_incompatibleTransitiveFilesOrder() throws Exception {
+    scratch.file(
+        "test/rule.bzl",
+        "def _bad_runfiles_impl(ctx):",
+        "  ctx.runfiles(transitive_files = depset(order = 'preorder'))",
+        "bad_runfiles = rule(implementation = _bad_runfiles_impl)");
+    scratch.file("test/BUILD", "load(':rule.bzl', 'bad_runfiles')", "bad_runfiles(name = 'test')");
+    reporter.removeHandler(failFastHandler); // Error expected.
+    assertThat(getConfiguredTarget("//test:test")).isNull();
+    assertContainsEvent("Error in runfiles: order 'preorder' is invalid for transitive_files");
   }
 
   @Test
@@ -2948,7 +3060,6 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
         "something/BUILD",
         "load('//something:defs.bzl', 'use_exec_groups')",
         "use_exec_groups(name = 'nectarine')");
-    setBuildLanguageOptions("--experimental_exec_groups=true");
     useConfiguration(
         "--extra_toolchains=//toolchain:foo_toolchain,//toolchain:bar_toolchain",
         "--platforms=//platform:platform_1");
@@ -2966,9 +3077,10 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
                     Label.parseAbsoluteUnchecked("//something:defs.bzl"), "result"));
     assertThat(info).isNotNull();
     assertThat(info.getValue("toolchain_value")).isEqualTo("foo");
-    assertThat(info.getValue("exec_groups")).isInstanceOf(ExecGroupCollection.class);
+    assertThat(info.getValue("exec_groups")).isInstanceOf(StarlarkExecGroupCollection.class);
     ImmutableMap<String, ResolvedToolchainContext> toolchainContexts =
-        ((ExecGroupCollection) info.getValue("exec_groups")).getToolchainCollectionForTesting();
+        ((StarlarkExecGroupCollection) info.getValue("exec_groups"))
+            .getToolchainCollectionForTesting();
     assertThat(toolchainContexts.keySet()).containsExactly(DEFAULT_EXEC_GROUP_NAME, "dragonfruit");
     assertThat(toolchainContexts.get(DEFAULT_EXEC_GROUP_NAME).requiredToolchainTypes()).isEmpty();
     assertThat(toolchainContexts.get("dragonfruit").resolvedToolchainLabels())
@@ -3009,7 +3121,6 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
         "constraint_value(name = 'extra', constraint_setting = ':setting')",
         "load('//something:defs.bzl', 'use_exec_groups')",
         "use_exec_groups(name = 'nectarine')");
-    setBuildLanguageOptions("--experimental_exec_groups=true");
     useConfiguration(
         "--extra_toolchains=//toolchain:foo_toolchain,//toolchain:bar_toolchain",
         "--platforms=//platform:platform_1");
@@ -3022,9 +3133,10 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
                     Label.parseAbsoluteUnchecked("//something:defs.bzl"), "result"));
     assertThat(info).isNotNull();
     assertThat(info.getValue("toolchain_value")).isEqualTo("foo");
-    assertThat(info.getValue("exec_groups")).isInstanceOf(ExecGroupCollection.class);
+    assertThat(info.getValue("exec_groups")).isInstanceOf(StarlarkExecGroupCollection.class);
     ImmutableMap<String, ResolvedToolchainContext> toolchainContexts =
-        ((ExecGroupCollection) info.getValue("exec_groups")).getToolchainCollectionForTesting();
+        ((StarlarkExecGroupCollection) info.getValue("exec_groups"))
+            .getToolchainCollectionForTesting();
     assertThat(toolchainContexts.keySet())
         .containsExactly(DEFAULT_EXEC_GROUP_NAME, "dragonfruit", "passionfruit");
     assertThat(toolchainContexts.get(DEFAULT_EXEC_GROUP_NAME).requiredToolchainTypes()).isEmpty();
@@ -3138,14 +3250,15 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
     scratch.file(
         "test/rule.bzl",
         "def _sample_impl(ctx):",
-        "    info = ctx.toolchains['//:toolchain_type']",
-        "    if info != None:",
-        "        fail('Toolchain should be empty')",
+        "    # This should raise an error.",
+        "    ctx.toolchains['//:toolchain_type']",
+        "    fail('Toolchain was not empty')",
         "sample_setting = rule(",
         "    implementation = _sample_impl,",
         "    build_setting = config.bool(flag = True),",
         ")");
-    getConfiguredTarget("//test:test");
-    assertNoEvents();
+    assertThrows(AssertionError.class, () -> getConfiguredTarget("//test:test"));
+    assertContainsEvent("Toolchains are not valid in this context");
+    assertDoesNotContainEvent("Toolchain was not empty");
   }
 }

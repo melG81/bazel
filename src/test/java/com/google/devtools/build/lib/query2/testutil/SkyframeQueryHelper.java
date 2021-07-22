@@ -93,7 +93,6 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
 
   private PackageManager pkgManager;
   private TargetPatternPreloader targetParser;
-  private PathFragment relativeWorkingDirectory = PathFragment.EMPTY_FRAGMENT;
   private boolean blockUniverseEvaluationErrors;
   protected final ActionKeyContext actionKeyContext = new ActionKeyContext();
 
@@ -198,7 +197,7 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
         pkgManager,
         pkgManager,
         targetParser,
-        relativeWorkingDirectory,
+        /*relativeWorkingDirectory=*/ PathFragment.EMPTY_FRAGMENT,
         keepGoing,
         /*strictScope=*/ true,
         orderedResults,
@@ -223,7 +222,7 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
     }
   }
 
-  public ResultAndTargets<Target> evaluateQuery(
+  public static ResultAndTargets<Target> evaluateQuery(
       String query, AbstractBlazeQueryEnvironment<Target> env)
       throws QueryException, InterruptedException {
     AggregateAllOutputFormatterCallback<Target, ?> callback =
@@ -281,6 +280,7 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
     this.toolsRepository = ruleClassProvider.getToolsRepository();
     skyframeExecutor = createSkyframeExecutor(ruleClassProvider);
     PackageOptions packageOptions = Options.getDefaults(PackageOptions.class);
+
     packageOptions.defaultVisibility = ConstantRuleVisibility.PRIVATE;
     packageOptions.showLoadingProgress = true;
     packageOptions.globbingThreads = 7;
@@ -295,7 +295,8 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
           packageLocator,
           Options.getDefaults(BuildLanguageOptions.class),
           UUID.randomUUID(),
-          ImmutableMap.<String, String>of(),
+          ImmutableMap.of(),
+          ImmutableMap.of(),
           new TimestampGranularityMonitor(BlazeClock.instance()),
           OptionsProvider.EMPTY);
     } catch (InterruptedException | AbruptExitException e) {
@@ -322,7 +323,6 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
             .setFileSystem(fileSystem)
             .setDirectories(directories)
             .setActionKeyContext(actionKeyContext)
-            .setDefaultBuildOptions(getDefaultBuildOptions(ruleClassProvider))
             .setIgnoredPackagePrefixesFunction(
                 new IgnoredPackagePrefixesFunction(ignoredPackagePrefixesFile))
             .setExtraSkyFunctions(analysisMock.getSkyFunctions(directories))
@@ -335,7 +335,8 @@ public abstract class SkyframeQueryHelper extends AbstractQueryHelper<Target> {
                 RepositoryDelegatorFunction.REPOSITORY_OVERRIDES, ImmutableMap.of()),
             PrecomputedValue.injected(
                 RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING,
-                RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY)));
+                RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY),
+            PrecomputedValue.injected(RepositoryDelegatorFunction.ENABLE_BZLMOD, false)));
     SkyframeExecutorTestHelper.process(skyframeExecutor);
     return skyframeExecutor;
   }
