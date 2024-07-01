@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.buildtool;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.stream.Collectors.joining;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -62,8 +63,10 @@ import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.server.FailureDetails.ActionQuery;
+import com.google.devtools.build.lib.server.FailureDetails.BuildConfiguration.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.skyframe.BuildResultListener;
+import com.google.devtools.build.lib.skyframe.ProjectValue;
 import com.google.devtools.build.lib.skyframe.RepositoryMappingValue.RepositoryMappingResolutionException;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.SkyframeBuildView.BuildDriverKeyTestContext;
@@ -76,6 +79,9 @@ import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.InterruptedFailureDetails;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.skyframe.EvaluationResult;
+import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.common.options.RegexPatternOption;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -272,10 +278,25 @@ public class BuildTool {
         env.ensureBuildInfoPosted();
       }
 
-      if (!hasAnyExceptionOrError) {
+      if (!hasAnyExceptionOrError && env.getSkyframeExecutor().getSkyfocusState().enabled()) {
         // Skyfocus only works at the end of a successful build.
+        ImmutableSet<Label> topLevelTargets =
+            result.getActualTargets().stream()
+                .map(ConfiguredTarget::getLabel)
+                .collect(toImmutableSet());
+        Label projectFile =
+            getProjectFile(topLevelTargets, env.getSkyframeExecutor(), env.getReporter());
+        ImmutableSet<PathFragment> projectDirectories =
+            projectFile == null
+                ? ImmutableSet.of()
+                : getProjectDirectories(projectFile, env.getSkyframeExecutor(), env.getReporter());
         env.getSkyframeExecutor()
-            .runSkyfocus(env.getReporter(), env.getBlazeWorkspace().getPersistentActionCache());
+            .runSkyfocus(
+                topLevelTargets,
+                projectDirectories,
+                env.getReporter(),
+                env.getBlazeWorkspace().getPersistentActionCache(),
+                env.getOptions());
       }
     }
   }
@@ -312,7 +333,11 @@ public class BuildTool {
       if (projectFile != null) {
         postFlagSetsBuildOptions =
             applySclConfigs(
-                buildOptionsBeforeFlagSets, projectFile, env.getSkyframeExecutor(), getReporter());
+                buildOptionsBeforeFlagSets,
+                projectFile,
+                request.getBuildOptions().enforceProjectConfigs,
+                env.getSkyframeExecutor(),
+                getReporter());
       } else {
         postFlagSetsBuildOptions = buildOptionsBeforeFlagSets;
       }
@@ -743,7 +768,7 @@ public class BuildTool {
   // TODO: b/324127375 - Support hierarchical project files: [foo/project.scl, foo/bar/project.scl].
   @Nullable
   @VisibleForTesting
-  static Label getProjectFile(
+  public static Label getProjectFile(
       Collection<Label> topLevelTargets,
       SkyframeExecutor skyframeExecutor,
       ExtendedEventHandler eventHandler)
@@ -792,17 +817,43 @@ public class BuildTool {
     }
   }
 
+  /** Returns the project directories found in a project file. */
+  private static ImmutableSet<PathFragment> getProjectDirectories(
+      Label projectFile, SkyframeExecutor skyframeExecutor, ExtendedEventHandler eventHandler)
+      throws InvalidConfigurationException {
+    ProjectValue.Key key = new ProjectValue.Key(projectFile);
+    EvaluationResult<SkyValue> result =
+        skyframeExecutor.evaluateSkyKeys(
+            eventHandler, ImmutableList.of(key), /* keepGoing= */ false);
+
+    if (result.hasError()) {
+      // InvalidConfigurationException is chosen for convenience, and it's distinguished from
+      // the other InvalidConfigurationException cases by Code.INVALID_PROJECT.
+      throw new InvalidConfigurationException(
+          "unexpected error reading project configuration: " + result.getError(),
+          Code.INVALID_PROJECT);
+    }
+
+    return ((ProjectValue) result.get(key))
+        .getOwnedCodePaths().stream().map(PathFragment::create).collect(toImmutableSet());
+  }
+
   /** Creates a BuildOptions class for the given options taken from an {@link OptionsProvider}. */
   public static BuildOptions applySclConfigs(
       BuildOptions buildOptionsBeforeFlagSets,
       Label projectFile,
+      boolean enforceCanonicalConfigs,
       SkyframeExecutor skyframeExecutor,
       ExtendedEventHandler eventHandler)
       throws InvalidConfigurationException {
 
     FlagSetValue flagSetValue =
         Project.modifyBuildOptionsWithFlagSets(
-            projectFile, buildOptionsBeforeFlagSets, eventHandler, skyframeExecutor);
+            projectFile,
+            buildOptionsBeforeFlagSets,
+            enforceCanonicalConfigs,
+            eventHandler,
+            skyframeExecutor);
 
     // BuildOptions after Flagsets
     return flagSetValue.getTopLevelBuildOptions();

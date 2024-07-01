@@ -36,6 +36,7 @@ import com.google.devtools.build.skyframe.SkyKey;
 import java.util.Collection;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.annotation.Nullable;
 
 /**
  * SkyframeFocuser is a minimizing optimizer (i.e. garbage collector) for the Skyframe graph, based
@@ -53,9 +54,10 @@ public final class SkyframeFocuser extends AbstractQueueVisitor {
   // The in-memory Skyframe graph
   private final InMemoryGraph graph;
 
-  private final ActionCache actionCache;
+  // Can be null with --nouse_action_cache.
+  @Nullable private final ActionCache actionCache;
 
-  private SkyframeFocuser(InMemoryGraph graph, ActionCache actionCache) {
+  private SkyframeFocuser(InMemoryGraph graph, @Nullable ActionCache actionCache) {
     super(
         /* parallelism= */ Runtime.getRuntime().availableProcessors(),
         /* keepAliveTime= */ 2,
@@ -86,10 +88,7 @@ public final class SkyframeFocuser extends AbstractQueueVisitor {
    * @return the set of kept SkyKeys in the in-memory graph, categorized by deps and rdeps.
    */
   public static FocusResult focus(
-      InMemoryGraph graph,
-      ActionCache actionCache,
-      Set<SkyKey> roots,
-      Set<SkyKey> leafs)
+      InMemoryGraph graph, @Nullable ActionCache actionCache, Set<SkyKey> roots, Set<SkyKey> leafs)
       throws InterruptedException {
     SkyframeFocuser focuser = new SkyframeFocuser(graph, actionCache);
     return focuser.run(roots, leafs);
@@ -120,18 +119,7 @@ public final class SkyframeFocuser extends AbstractQueueVisitor {
       ImmutableSet<SkyKey> deps,
       ImmutableSet<SkyKey> verificationSet,
       long rdepEdgesBefore,
-      long rdepEdgesAfter) {
-
-    public static final FocusResult NO_RESULT =
-        new FocusResult(
-            ImmutableSet.of(),
-            ImmutableSet.of(),
-            ImmutableSet.of(),
-            ImmutableSet.of(),
-            ImmutableSet.of(),
-            0L,
-            0L);
-  }
+      long rdepEdgesAfter) {}
 
   /**
    * NodeVisitor is parallelizable graph visitor that's applied transitively upwards from leafs to
@@ -329,60 +317,25 @@ public final class SkyframeFocuser extends AbstractQueueVisitor {
     // Keep the rdeps transitive closure from leafs distinct from the deps.
     keptDeps.removeAll(keptRdeps);
 
-    try (SilentCloseable c = Profiler.instance().profile("focus.sweep_nodes")) {
-      graph.parallelForEach(
-          inMemoryNodeEntry -> {
-            SkyKey key = inMemoryNodeEntry.getKey();
-            if (keptDeps.contains(key)) {
-              return;
-            }
-            if (keptRdeps.contains(key)) {
-              return;
-            }
-            if (verificationSet.contains(key)) {
-              // TODO: b/327545930 - fsvc supports checking keys with missing values in the graph
-              // using `FileSystemValueCheckerInferringAncestors#visitUnknownEntry`, so perhaps we
-              // could drop the nodes here, but that doesn't (yet) work with LocalDiffAwareness.
-              //
-              // For now, keep the nodes in the verification set because the
-              // fsvc#getDirtyKeys relies on their existence in the graph to check for
-              // dirty keys to invalidate.
-              return;
-            }
-
-            if (!inMemoryNodeEntry.isDone()) {
-              // Don't remove undone nodes -- these are nodes that were already in the graph,
-              // but invalidated and not evaluated in this current invocation.
-              return;
-            }
-
-            if (inMemoryNodeEntry.getValue() instanceof ActionLookupValue alv) {
-              for (ActionAnalysisMetadata a : alv.getActions()) {
-                for (Artifact output : a.getOutputs()) {
-                  actionCache.remove(output.getExecPathString());
-                }
-              }
-            }
-
-            graph.remove(key);
-          });
-
-      graph.shrinkNodeMap();
-    }
+    // Ensure that the verification set doesn't contain any direct deps to build the
+    // working set.
+    verificationSet.removeAll(keptDeps);
 
     AtomicLong rdepEdgesBefore = new AtomicLong();
     AtomicLong rdepEdgesAfter = new AtomicLong();
 
-    try (SilentCloseable c = Profiler.instance().profile("focus.sweep_edges")) {
-      for (SkyKey key : keptDeps) {
-        execute(
-            () -> {
-              // TODO: b/312819241 - Consider transforming IncrementalInMemoryNodeEntry only used
-              // for their immutable states to an ImmutableDoneNodeEntry or
-              // NonIncrementalInMemoryNodeEntry
-              // for further memory savings.
-              IncrementalInMemoryNodeEntry nodeEntry =
-                  (IncrementalInMemoryNodeEntry) graph.getIfPresent(key);
+    try (SilentCloseable c = Profiler.instance().profile("focus.sweep")) {
+      graph.parallelForEach(
+          inMemoryNodeEntry -> {
+            SkyKey key = inMemoryNodeEntry.getKey();
+
+            if (keptRdeps.contains(key)) {
+              return;
+            }
+
+            if (keptDeps.contains(key)) {
+              IncrementalInMemoryNodeEntry incrementalInMemoryNodeEntry =
+                  (IncrementalInMemoryNodeEntry) inMemoryNodeEntry;
 
               // No need to keep the direct deps edges of existing deps. For example:
               //
@@ -395,35 +348,69 @@ public final class SkyframeFocuser extends AbstractQueueVisitor {
               // B is the root, and A is the only leaf. We can throw out the CD edge, even
               // though both C and D are still used by B. This is because no changes are expected to
               // C and D, so it's unnecessary to maintain the edges.
-              Preconditions.checkNotNull(nodeEntry, key);
-              nodeEntry.clearDirectDepsForSkyfocus();
-
-              if (isVerificationSetKeyType(key)) {
-                // Ensure that the verification set doesn't contain any direct deps to build the
-                // working set.
-                verificationSet.remove(key);
-              }
+              incrementalInMemoryNodeEntry.clearDirectDepsForSkyfocus();
 
               // No need to keep the rdep edges of the deps if they do not point to an rdep
               // reachable (hence, dirty-able) by the working set.
               //
               // This accounts for nearly 5% of 9+GB retained heap on a large server build.
-              Collection<SkyKey> existingRdeps = nodeEntry.getReverseDepsForDoneEntry();
+              Collection<SkyKey> existingRdeps =
+                  incrementalInMemoryNodeEntry.getReverseDepsForDoneEntry();
               rdepEdgesBefore.getAndAdd(existingRdeps.size());
               int rdepEdgesKept = 0;
               for (SkyKey rdep : existingRdeps) {
                 if (keptRdeps.contains(rdep)) {
                   rdepEdgesKept++;
                 } else {
-                  nodeEntry.removeReverseDep(rdep);
+                  incrementalInMemoryNodeEntry.removeReverseDep(rdep);
                 }
               }
               rdepEdgesAfter.getAndAdd(rdepEdgesKept);
 
               // This calls ReverseDepsUtility.consolidateData().
-              nodeEntry.consolidateReverseDeps();
-            });
-      }
+              incrementalInMemoryNodeEntry.consolidateReverseDeps();
+
+              return;
+            }
+
+            if (verificationSet.contains(key)) {
+              // TODO: b/327545930 - fsvc supports checking keys with missing values in the graph
+              // using `FileSystemValueCheckerInferringAncestors#visitUnknownEntry`, so perhaps we
+              // could drop the nodes here, but that doesn't (yet) work with LocalDiffAwareness.
+              //
+              // For now, keep the nodes in the verification set because the
+              // fsvc#getDirtyKeys relies on their existence in the graph to check for
+              // dirty keys to invalidate.
+              //
+              // Also remove all rdep edges from the verification set and make it flat.
+              Collection<SkyKey> rdeps = inMemoryNodeEntry.getReverseDepsForDoneEntry();
+              rdepEdgesBefore.getAndAdd(rdeps.size());
+              for (SkyKey rdep : rdeps) {
+                inMemoryNodeEntry.removeReverseDep(rdep);
+              }
+
+              return;
+            }
+
+            if (!inMemoryNodeEntry.isDone()) {
+              // Don't remove undone nodes -- these are nodes that were already in the graph,
+              // but invalidated and not evaluated in this current invocation.
+              return;
+            }
+
+            if (actionCache != null
+                && inMemoryNodeEntry.getValue() instanceof ActionLookupValue alv) {
+              for (ActionAnalysisMetadata a : alv.getActions()) {
+                for (Artifact output : a.getOutputs()) {
+                  actionCache.remove(output.getExecPathString());
+                }
+              }
+            }
+
+            graph.remove(key);
+          });
+
+      graph.shrinkNodeMap();
 
       awaitQuiescence(true); // and shut down the ExecutorService.
     }

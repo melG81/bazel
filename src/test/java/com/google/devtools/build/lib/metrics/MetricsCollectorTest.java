@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.profiler.MemoryProfiler;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
+import com.google.devtools.build.lib.runtime.MemoryPressureModule;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.worker.WorkerProcessMetrics;
 import com.google.devtools.build.lib.worker.WorkerProcessMetricsCollector;
@@ -70,11 +71,14 @@ public class MetricsCollectorTest extends BuildIntegrationTestCase {
   }
 
   private BuildMetricsEventListener buildMetricsEventListener = new BuildMetricsEventListener();
+  // needed for HeapOffset options.
+  private final MemoryPressureModule memoryPressureModule = new MemoryPressureModule();
 
   @Override
   protected BlazeRuntime.Builder getRuntimeBuilder() throws Exception {
     return super.getRuntimeBuilder()
-        .addBlazeModule(buildMetricsEventListener);
+        .addBlazeModule(buildMetricsEventListener)
+        .addBlazeModule(memoryPressureModule);
   }
 
   @Before
@@ -402,9 +406,17 @@ public class MetricsCollectorTest extends BuildIntegrationTestCase {
                         .build())
                 .build());
 
-    // Validate RuleClass Aspect and SkyFunction data is reported.
+    // Validate RuleClass Aspect and SkyFunction data is not reported by default
     BuildGraphMetrics bgm =
         buildMetricsEventListener.event.getBuildMetrics().getBuildGraphMetrics();
+    assertThat(bgm.getRuleClassList()).isEmpty();
+    assertThat(bgm.getAspectList()).isEmpty();
+
+    // Enable skyframe metrics via flag and verify they're reported.
+    addOptions("--experimental_record_skyframe_metrics=1");
+    buildTarget("//a");
+    bgm = buildMetricsEventListener.event.getBuildMetrics().getBuildGraphMetrics();
+
     List<RuleClassCount> ruleClasses = bgm.getRuleClassList();
     List<AspectCount> aspectCount = bgm.getAspectList();
 

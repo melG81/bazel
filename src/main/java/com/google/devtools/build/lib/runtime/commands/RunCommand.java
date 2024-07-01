@@ -66,12 +66,10 @@ import com.google.devtools.build.lib.exec.TestPolicy;
 import com.google.devtools.build.lib.packages.InputFile;
 import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.NoSuchTargetException;
-import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
 import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.TargetUtils;
-import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.pkgcache.LoadingFailedException;
 import com.google.devtools.build.lib.runtime.BlazeCommand;
 import com.google.devtools.build.lib.runtime.BlazeCommandResult;
@@ -113,7 +111,7 @@ import javax.annotation.Nullable;
     name = "run",
     builds = true,
     options = {RunCommand.RunOptions.class},
-    inherits = {BuildCommand.class},
+    inheritsOptionsFrom = {BuildCommand.class},
     shortDescription = "Runs the specified target.",
     help = "resource:run.txt",
     allowResidue = true,
@@ -1123,10 +1121,7 @@ public class RunCommand implements BlazeCommand {
     if (!(target instanceof Rule rule)) {
       return false;
     }
-    if (rule.getRuleClassObject().hasAttr("$is_executable", Type.BOOLEAN)) {
-      return NonconfigurableAttributeMapper.of(rule).get("$is_executable", Type.BOOLEAN);
-    }
-    return false;
+    return rule.isExecutable();
   }
 
   private static boolean isPlainFile(Target target) {

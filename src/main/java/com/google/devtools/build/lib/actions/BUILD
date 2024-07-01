@@ -402,10 +402,12 @@ java_library(
     name = "fileset_output_symlink",
     srcs = ["FilesetOutputSymlink.java"],
     deps = [
+        ":artifacts",
         ":has_digest",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//third_party:auto_value",
         "//third_party:guava",
+        "//third_party:jsr305",
     ],
 )
 
@@ -469,6 +471,7 @@ java_library(
         ":artifacts",
         "//src/main/java/com/google/devtools/build/lib/skyframe:detailed_exceptions",
         "//src/main/java/com/google/devtools/build/lib/util:detailed_exit_code",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/protobuf:failure_details_java_proto",
         "//third_party:guava",
     ],
