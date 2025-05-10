@@ -572,64 +572,6 @@ public class CcStarlarkInternal implements StarlarkValue {
   }
 
   @StarlarkMethod(
-      name = "simple_linker_input",
-      documented = false,
-      parameters = {
-        @Param(name = "input"),
-        @Param(name = "artifact_category", defaultValue = "'object_file'"),
-        @Param(name = "disable_whole_archive", defaultValue = "False")
-      })
-  public LegacyLinkerInput simpleLinkerInput(
-      Artifact input, String artifactCategory, boolean disableWholeArchive) {
-    return LegacyLinkerInputs.simpleLinkerInput(
-        input,
-        ArtifactCategory.valueOf(Ascii.toUpperCase(artifactCategory)),
-        /* disableWholeArchive= */ disableWholeArchive,
-        input.getRootRelativePathString());
-  }
-
-  @StarlarkMethod(
-      name = "library_linker_input",
-      documented = false,
-      parameters = {
-        @Param(name = "input", named = true),
-        @Param(name = "artifact_category", named = true),
-        @Param(name = "library_identifier", named = true),
-        @Param(name = "object_files", named = true),
-        @Param(name = "lto_compilation_context", named = true),
-        @Param(name = "shared_non_lto_backends", defaultValue = "None", named = true),
-        @Param(name = "must_keep_debug", defaultValue = "False", named = true),
-        @Param(name = "disable_whole_archive", defaultValue = "False", named = true),
-      })
-  public LegacyLinkerInput libraryLinkerInput(
-      Artifact input,
-      String artifactCategory,
-      String libraryIdentifier,
-      Object objectFiles,
-      Object ltoCompilationContext,
-      Object sharedNonLtoBackends,
-      boolean mustKeepDebug,
-      boolean disableWholeArchive)
-      throws EvalException {
-    return LegacyLinkerInputs.newInputLibrary(
-        input,
-        ArtifactCategory.valueOf(artifactCategory),
-        libraryIdentifier,
-        objectFiles == Starlark.NONE
-            ? null
-            : Sequence.cast(objectFiles, Artifact.class, "object_files").getImmutableList(),
-        ltoCompilationContext instanceof LtoCompilationContext lto ? lto : null,
-        /* sharedNonLtoBackends= */ ImmutableMap.copyOf(
-            Dict.noneableCast(
-                sharedNonLtoBackends,
-                Artifact.class,
-                LtoBackendArtifacts.class,
-                "shared_non_lto_backends")),
-        mustKeepDebug,
-        disableWholeArchive);
-  }
-
-  @StarlarkMethod(
       name = "get_link_args",
       documented = false,
       parameters = {
@@ -697,8 +639,6 @@ public class CcStarlarkInternal implements StarlarkValue {
       documented = false,
       useStarlarkThread = true,
       parameters = {
-        @Param(name = "object_file_inputs"),
-        @Param(name = "linkstamp_object_file_inputs"),
         @Param(name = "libraries_to_link"),
         @Param(name = "cc_toolchain"),
         @Param(name = "feature_configuration"),
@@ -715,8 +655,6 @@ public class CcStarlarkInternal implements StarlarkValue {
         @Param(name = "workspace_name"),
       })
   public StructImpl collectLibrariesToLink(
-      Sequence<?> objectFileInputs,
-      Sequence<?> linkstampObjectFileInputs,
       Sequence<?> librariesToLink,
       StarlarkInfo ccToolchain,
       FeatureConfigurationForStarlark featureConfiguration,
@@ -745,9 +683,6 @@ public class CcStarlarkInternal implements StarlarkValue {
             Dict.cast(ltoMapping, Artifact.class, Artifact.class, "lto_mapping"),
             featureConfiguration.getFeatureConfiguration(),
             allowLtoIndexing,
-            Sequence.cast(objectFileInputs, Artifact.class, "object_file_inputs"),
-            Sequence.cast(
-                linkstampObjectFileInputs, Artifact.class, "linkstamp_object_file_inputs"),
             Sequence.cast(librariesToLink, LibraryToLink.class, "librariesToLink"),
             needWholeArchive,
             workspaceName,

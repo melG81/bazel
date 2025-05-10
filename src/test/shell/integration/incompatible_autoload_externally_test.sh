@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright 2024 The Bazel Authors. All rights reserved.
 #
@@ -24,6 +24,7 @@ source "${CURRENT_DIR}/../integration_test_setup.sh" \
 #### SETUP #############################################################
 
 set -e
+add_to_bazelrc "common --noincompatible_disable_autoloads_in_main_repo"
 
 #### TESTS #############################################################
 

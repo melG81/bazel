@@ -217,10 +217,12 @@ java_library(
     ],
     deps = [
         ":runtime/blaze_command_result",
+        "//src/main/java/com/google/devtools/build/lib/server:idle_task",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/java/com/google/devtools/build/lib/util/io:io-proto",
         "//src/main/java/com/google/devtools/build/lib/util/io:out-err",
         "//src/main/protobuf:invocation_policy_java_proto",
+        "//third_party:guava",
         "@com_google_protobuf//java/core",
     ],
 )
@@ -431,6 +433,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/sandbox/cgroups",
         "//src/main/java/com/google/devtools/build/lib/sandbox/cgroups/proto:cgroups_info_java_proto",
         "//src/main/java/com/google/devtools/build/lib/server",
+        "//src/main/java/com/google/devtools/build/lib/server:gc_and_interner_shrinking_idle_task",
         "//src/main/java/com/google/devtools/build/lib/server:idle_task",
         "//src/main/java/com/google/devtools/build/lib/server:install_base_garbage_collector",
         "//src/main/java/com/google/devtools/build/lib/server:pid_file_watcher",
