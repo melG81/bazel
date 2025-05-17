@@ -82,7 +82,6 @@ import com.google.devtools.build.lib.actions.SimpleSpawn;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
-import com.google.devtools.build.lib.actions.StaticInputMetadataProvider;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.SymlinkEntry;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue.RunfileSymlinksMode;
@@ -2394,7 +2393,7 @@ public class RemoteExecutionServiceTest {
                 NodeProperties.newBuilder()
                     .addProperties(NodeProperty.newBuilder().setName("bazel_tool_input")))
             .build();
-    var rootDirectory =
+    var outputsDirectory =
         Directory.newBuilder()
             .addFiles(inputFile)
             .addFiles(toolFile)
@@ -2405,12 +2404,18 @@ public class RemoteExecutionServiceTest {
                     .build())
             .build();
 
+    var rootDirectory =
+        Directory.newBuilder()
+            .addDirectories(
+                DirectoryNode.newBuilder()
+                    .setName(enablePathMapping ? "mapped_outputs" : "outputs")
+                    .setDigest(digestUtil.compute(outputsDirectory))
+                    .build())
+            .build();
+
     var remoteAction1 = service.buildRemoteAction(spawn, context);
     var merkleTree = remoteAction1.getMerkleTree();
-    assertThat(
-            merkleTree.getDirectoryByDigest(
-                merkleTree.getRootProto().getDirectories(0).getDigest()))
-        .isEqualTo(rootDirectory);
+    assertThat(merkleTree.getRootProto()).isEqualTo(rootDirectory);
     assertThat(remoteAction1.getAction().getPlatform().getPropertiesList()).hasSize(1);
     assertThat(remoteAction1.getAction().getPlatform().getProperties(0).getName())
         .isEqualTo("persistentWorkerKey");
@@ -2646,12 +2651,6 @@ public class RemoteExecutionServiceTest {
   }
 
   private FakeSpawnExecutionContext newSpawnExecutionContext(Spawn spawn, FileOutErr outErr) {
-    ImmutableList<Artifact> actionOutputs =
-        spawn.getOutputFiles().stream()
-            .filter(i -> i instanceof Artifact)
-            .map(i -> (Artifact) i)
-            .collect(toImmutableList());
-
     var actionInputFetcher =
         new RemoteActionInputFetcher(
             new Reporter(new EventBus()),
@@ -2670,8 +2669,6 @@ public class RemoteExecutionServiceTest {
             execRoot.asFragment(),
             artifactRoot.getRoot().asPath().relativeTo(execRoot).getPathString(),
             new ActionInputMap(0),
-            actionOutputs,
-            StaticInputMetadataProvider.empty(),
             actionInputFetcher);
 
     return new FakeSpawnExecutionContext(
@@ -2765,11 +2762,6 @@ public class RemoteExecutionServiceTest {
       @Override
       public Artifact getRepoMappingManifestForLogging() {
         return null;
-      }
-
-      @Override
-      public boolean isLegacyExternalRunfiles() {
-        return false;
       }
 
       @Override

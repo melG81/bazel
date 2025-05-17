@@ -75,6 +75,7 @@ import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.LoadingFailedException;
+import com.google.devtools.build.lib.pkgcache.PackagePathCodecDependencies;
 import com.google.devtools.build.lib.profiler.ProfilePhase;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
@@ -113,7 +114,6 @@ import com.google.devtools.build.lib.skyframe.serialization.analysis.ClientId;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.FrontierSerializer;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.FrontierViolationChecker;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingDependenciesProvider;
-import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingDependenciesProvider.DisabledDependenciesProvider;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingEventListener;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingOptions;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCachingOptions.RemoteAnalysisCacheMode;
@@ -127,6 +127,7 @@ import com.google.devtools.build.lib.vfs.ModifiedFileSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.Root.RootCodecDependencies;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.IntVersion;
 import com.google.devtools.build.skyframe.SkyFunctionName;
@@ -142,6 +143,7 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -268,7 +270,7 @@ public class BuildTool {
           evaluateProjectFile(
               request, buildOptions, request.getUserOptions(), targetPatternPhaseValue, env);
 
-      if (projectEvaluationResult != null && !projectEvaluationResult.buildOptions().isEmpty()) {
+      if (!projectEvaluationResult.buildOptions().isEmpty()) {
         // First parse the native options from the project file.
         optionsParser.parse(
             PriorityCategory.COMMAND_LINE,
@@ -305,10 +307,8 @@ public class BuildTool {
       }
       buildOptions = runtime.createBuildOptions(optionsParser);
       var analysisCachingDeps =
-          projectEvaluationResult == null
-              ? DisabledDependenciesProvider.INSTANCE
-              : RemoteAnalysisCachingDependenciesProviderImpl.forAnalysis(
-                  env, projectEvaluationResult.activeDirectoriesMatcher());
+          RemoteAnalysisCachingDependenciesProviderImpl.forAnalysis(
+              env, projectEvaluationResult.activeDirectoriesMatcher());
 
       if (env.withMergedAnalysisAndExecutionSourceOfTruth()) {
         // a.k.a. Skymeld.
@@ -385,8 +385,6 @@ public class BuildTool {
       RemoteAnalysisCachingDependenciesProvider analysisCachingDeps)
       throws BuildFailedException,
           ViewCreationFailedException,
-          TargetParsingException,
-          LoadingFailedException,
           AbruptExitException,
           RepositoryMappingResolutionException,
           InterruptedException,
@@ -451,11 +449,11 @@ public class BuildTool {
               delayedFailureDetail.getMessage(), DetailedExitCode.of(delayedFailureDetail));
         }
 
-        // Only run this post-build step for builds with SequencedSkyframeExecutor.
-        if (env.getSkyframeExecutor() instanceof SequencedSkyframeExecutor) {
-          // Enabling this feature will disable Skymeld, so it only runs in the non-Skymeld path.
-          if (request.getBuildOptions().aqueryDumpAfterBuildFormat != null) {
-            try (SilentCloseable c = Profiler.instance().profile("postExecutionDumpSkyframe")) {
+        // Only run this post-build step for builds with SequencedSkyframeExecutor. Enabling the
+        // aquery dump format feature will disable Skymeld, so it only runs in the non-Skymeld path.
+        if ((env.getSkyframeExecutor() instanceof SequencedSkyframeExecutor)
+            && request.getBuildOptions().aqueryDumpAfterBuildFormat != null) {
+          try (SilentCloseable c = Profiler.instance().profile("postExecutionDumpSkyframe")) {
               dumpSkyframeStateAfterBuild(
                   request.getOptions(BuildEventProtocolOptions.class),
                   request.getBuildOptions().aqueryDumpAfterBuildFormat,
@@ -463,11 +461,10 @@ public class BuildTool {
             } catch (CommandLineExpansionException | IOException | TemplateExpansionException e) {
               throw new PostExecutionDumpException(e);
             } catch (InvalidAqueryOutputFormatException e) {
-              throw new PostExecutionDumpException(
-                  "--skyframe_state must be used with "
-                      + "--output=proto|streamed_proto|textproto|jsonproto.",
-                  e);
-            }
+            throw new PostExecutionDumpException(
+                "--skyframe_state must be used with "
+                    + "--output=proto|streamed_proto|textproto|jsonproto.",
+                e);
           }
         }
       }
@@ -1034,7 +1031,7 @@ public class BuildTool {
   }
 
   /** Returns the project directories found in a project file. */
-  public static PathFragmentPrefixTrie getWorkingSetMatcherForSkyfocus(
+  public static PathFragmentPrefixTrie getActiveDirectoriesMatcher(
       Label projectFile, SkyframeExecutor skyframeExecutor, ExtendedEventHandler eventHandler)
       throws InvalidConfigurationException {
     ProjectValue.Key key = new ProjectValue.Key(projectFile);
@@ -1106,23 +1103,26 @@ public class BuildTool {
     private final ExtendedEventHandler eventHandler;
 
     public static RemoteAnalysisCachingDependenciesProvider forAnalysis(
-        CommandEnvironment env, Optional<PathFragmentPrefixTrie> activeDirectoriesMatcher)
+        CommandEnvironment env, Optional<PathFragmentPrefixTrie> maybeActiveDirectoriesMatcher)
         throws InterruptedException, AbruptExitException {
       var options = env.getOptions().getOptions(RemoteAnalysisCachingOptions.class);
       if (options == null
           || !env.getCommand().buildPhase().executes()
-          || activeDirectoriesMatcher.isEmpty()) {
+          || options.mode == RemoteAnalysisCacheMode.OFF) {
         return DisabledDependenciesProvider.INSTANCE;
       }
 
-      RemoteAnalysisCacheMode mode = options.mode;
-      if (mode == RemoteAnalysisCacheMode.OFF) {
+      Optional<PathFragmentPrefixTrie> maybeActiveDirectoriesMatcherFromFlags =
+          determineActiveDirectoriesMatcher(env, maybeActiveDirectoriesMatcher, options.mode);
+      if (maybeActiveDirectoriesMatcherFromFlags.isEmpty()) {
         return DisabledDependenciesProvider.INSTANCE;
       }
-
       var dependenciesProvider =
           new RemoteAnalysisCachingDependenciesProviderImpl(
-              env, activeDirectoriesMatcher.get(), options.mode, options.serializedFrontierProfile);
+              env,
+              maybeActiveDirectoriesMatcherFromFlags.get(),
+              options.mode,
+              options.serializedFrontierProfile);
 
       switch (options.mode) {
         case RemoteAnalysisCacheMode.DUMP_UPLOAD_MANIFEST_ONLY:
@@ -1133,8 +1133,6 @@ public class BuildTool {
         case RemoteAnalysisCacheMode.DOWNLOAD:
           if (dependenciesProvider.getAnalysisCacheClient() != null) {
             // If analysis cache service is non-null, skip frontier violation checks.
-            // TODO(b/411485521): send SkyKeys to the analysis cache service to
-            // check for invalidation.
             return dependenciesProvider;
           }
 
@@ -1148,6 +1146,40 @@ public class BuildTool {
               env.getEventBus());
         default:
           throw new IllegalStateException("Unknown RemoteAnalysisCacheMode: " + options.mode);
+      }
+    }
+
+    /**
+     * Determines the active directories matcher for remote analysis caching operations.
+     *
+     * <p>For upload mode, optionally check the --experimental_active_directories flag if the
+     * project file matcher is not present.
+     */
+    private static Optional<PathFragmentPrefixTrie> determineActiveDirectoriesMatcher(
+        CommandEnvironment env,
+        Optional<PathFragmentPrefixTrie> maybeProjectFileMatcher,
+        RemoteAnalysisCacheMode mode) {
+      switch (mode) {
+        case RemoteAnalysisCacheMode.DOWNLOAD:
+          // Download mode: use the project file matcher only.
+          return maybeProjectFileMatcher;
+        case RemoteAnalysisCacheMode.UPLOAD:
+        case RemoteAnalysisCacheMode.DUMP_UPLOAD_MANIFEST_ONLY:
+          // Upload or Dump mode: allow overriding the project file matcher with the active
+          // directories flag.
+          List<String> activeDirectories =
+              env.getOptions().getOptions(SkyfocusOptions.class).activeDirectories;
+          if (activeDirectories.isEmpty()) {
+            return maybeProjectFileMatcher;
+          }
+          env.getReporter()
+              .handle(
+                  Event.warn(
+                      "Specifying --experimental_active_directories will override the active"
+                          + " directories specified in the PROJECT.scl file"));
+          return Optional.of(PathFragmentPrefixTrie.of(activeDirectories));
+        default:
+          throw new IllegalStateException("Unknown RemoteAnalysisCacheMode: " + mode);
       }
     }
 
@@ -1219,7 +1251,10 @@ public class BuildTool {
                   ArtifactSerializationContext.class,
                   skyframeExecutor.getSkyframeBuildView().getArtifactFactory()::getSourceArtifact)
               .put(RuleClassProvider.class, ruleClassProvider)
-              .put(Root.RootCodecDependencies.class, new Root.RootCodecDependencies(roots.build()))
+              .put(RootCodecDependencies.class, new RootCodecDependencies(roots.build()))
+              .put(
+                  PackagePathCodecDependencies.class,
+                  () -> skyframeExecutor.getPackageLocator().get().getPathEntries())
               // This is needed to determine TargetData for a ConfiguredTarget during serialization.
               .put(PrerequisitePackageFunction.class, skyframeExecutor::getExistingPackage);
 
