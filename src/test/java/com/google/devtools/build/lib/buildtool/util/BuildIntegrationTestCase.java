@@ -65,6 +65,7 @@ import com.google.devtools.build.lib.bugreport.Crash;
 import com.google.devtools.build.lib.bugreport.CrashContext;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.BuildResult;
+import com.google.devtools.build.lib.buildtool.BuildTool;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildStartingEvent;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
@@ -254,7 +255,7 @@ public abstract class BuildIntegrationTestCase {
             /* installBase= */ outputBase,
             /* outputBase= */ outputBase,
             /* outputUserRoot= */ outputBase,
-            /* execRootBase= */ getExecRootBase(),
+            /* execRootBase= */ outputBase.getRelative(ServerDirectories.EXECROOT),
             /* virtualSourceRoot= */ getVirtualSourceRoot(),
             // Arbitrary install base hash.
             /* installMD5= */ "83bc4458738962b9b77480bac76164a9");
@@ -330,10 +331,6 @@ public abstract class BuildIntegrationTestCase {
   @Nullable
   protected Root getVirtualSourceRoot() {
     return null;
-  }
-
-  protected Path getExecRootBase() {
-    return outputBase.getRelative(ServerDirectories.EXECROOT);
   }
 
   protected void createRuntimeWrapper() throws Exception {
@@ -1012,7 +1009,7 @@ public abstract class BuildIntegrationTestCase {
       boolean verboseFailures)
       throws ExecException, InterruptedException {
     Command command =
-        new CommandBuilder()
+        new CommandBuilder(System.getenv())
             .addArgs(argv)
             .setEnv(environment)
             .setWorkingDir(workingDirectory)

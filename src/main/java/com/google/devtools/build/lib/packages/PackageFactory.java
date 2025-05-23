@@ -32,7 +32,6 @@ import com.google.devtools.build.lib.packages.Package.Builder.PackageSettings;
 import com.google.devtools.build.lib.packages.Package.ConfigSettingVisibilityPolicy;
 import com.google.devtools.build.lib.packages.PackageValidator.InvalidPackageException;
 import com.google.devtools.build.lib.packages.PackageValidator.InvalidPackagePieceException;
-import com.google.devtools.build.lib.packages.WorkspaceFileValue.WorkspaceFileKey;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
@@ -208,22 +207,6 @@ public final class PackageFactory {
     return ruleClassProvider;
   }
 
-  public Package.Builder newExternalPackageBuilder(
-      WorkspaceFileKey workspaceFileKey,
-      String workspaceName,
-      RepositoryMapping mainRepoMapping,
-      StarlarkSemantics starlarkSemantics) {
-    return Package.newExternalPackageBuilder(
-        packageSettings,
-        workspaceFileKey,
-        workspaceName,
-        mainRepoMapping,
-        starlarkSemantics.getBool(BuildLanguageOptions.INCOMPATIBLE_NO_IMPLICIT_FILE_EXPORT),
-        starlarkSemantics.getBool(
-            BuildLanguageOptions.INCOMPATIBLE_SIMPLIFY_UNCONDITIONAL_SELECTS_IN_RULE_ATTRS),
-        packageOverheadEstimator);
-  }
-
   // This function is public only for the benefit of skyframe.PackageFunction,
   // which is morally part of lib.packages, so that it can create empty packages
   // in case of error before BUILD execution. Do not call it from anywhere else.
@@ -259,7 +242,8 @@ public final class PackageFactory {
         configSettingVisibilityPolicy,
         globber,
         /* enableNameConflictChecking= */ true,
-        /* trackFullMacroInformation= */ true);
+        /* trackFullMacroInformation= */ true,
+        packageValidator.getPackageLimits());
   }
 
   // This function is public only for the benefit of skyframe.PackageFunction, which is morally part
@@ -296,7 +280,34 @@ public final class PackageFactory {
         configSettingVisibilityPolicy,
         globber,
         /* enableNameConflictChecking= */ true,
-        /* trackFullMacroInformation= */ true);
+        /* trackFullMacroInformation= */ true,
+        packageValidator.getPackageLimits());
+  }
+
+  // This function is public only for the benefit of skyframe.EvalMacroFunction, which is morally
+  // part of lib.packages, so that it can create empty package pieces in case of error before macro
+  // execution. Do not call it from anywhere else.
+  public PackagePiece.ForMacro.Builder newPackagePieceForMacroBuilder(
+      MacroInstance macro,
+      PackagePieceIdentifier parentIdentifier,
+      PackagePiece.ForBuildFile pieceForBuildFile,
+      StarlarkSemantics starlarkSemantics,
+      RepositoryMapping mainRepositoryMapping,
+      @Nullable Semaphore cpuBoundSemaphore,
+      @Nullable ImmutableMap<Location, String> generatorMap) {
+    return PackagePiece.ForMacro.newBuilder(
+        macro,
+        parentIdentifier,
+        pieceForBuildFile,
+        starlarkSemantics.getBool(
+            BuildLanguageOptions.INCOMPATIBLE_SIMPLIFY_UNCONDITIONAL_SELECTS_IN_RULE_ATTRS),
+        mainRepositoryMapping,
+        cpuBoundSemaphore,
+        packageOverheadEstimator,
+        generatorMap,
+        /* enableNameConflictChecking= */ true,
+        /* trackFullMacroInformation= */ true,
+        packageValidator.getPackageLimits());
   }
 
   /** Returns a new {@link NonSkyframeGlobber}. */
@@ -490,9 +501,8 @@ public final class PackageFactory {
       // StarlarkRuleClassFunctions#createRule. So we set it here as a thread-local to be retrieved
       // by StarlarkTestingModule#analysisTest.
       thread.setThreadLocal(RuleDefinitionEnvironment.class, ruleClassProvider);
-      packageValidator.configureThreadWhileLoading(thread);
 
-      try {
+      try (var updater = pkgBuilder.updateStartedThreadComputationSteps(thread)) {
         Starlark.execFileProgram(buildFileProgram, module, thread);
       } catch (EvalException ex) {
         pkgBuilder
@@ -510,7 +520,6 @@ public final class PackageFactory {
           throw ex;
         }
       }
-      pkgBuilder.setComputationSteps(thread.getExecutedSteps());
     }
   }
 

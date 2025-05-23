@@ -444,12 +444,8 @@ public final class SkyframeActionExecutor {
   }
 
   private void updateActionFileSystemContext(
-      Action action,
-      FileSystem actionFileSystem,
-      OutputMetadataStore outputMetadataStore,
-      Map<Artifact, FilesetOutputTree> filesets) {
-    outputService.updateActionFileSystemContext(
-        action, actionFileSystem, outputMetadataStore, filesets);
+      Action action, FileSystem actionFileSystem, OutputMetadataStore outputMetadataStore) {
+    outputService.updateActionFileSystemContext(action, actionFileSystem, outputMetadataStore);
   }
 
   void executionOver() {
@@ -481,6 +477,15 @@ public final class SkyframeActionExecutor {
   /** Determines whether the given action was rewound during the current build. */
   public boolean wasRewound(Action action) {
     return rewoundActions.contains(new OwnerlessArtifactWrapper(action.getPrimaryOutput()));
+  }
+
+  /**
+   * Returns the count of actions rewound during the current build.
+   *
+   * <p>If an action is rewound multiple times, it is only counted once.
+   */
+  public int getRewoundActionCount() {
+    return rewoundActions.size();
   }
 
   /**
@@ -548,11 +553,7 @@ public final class SkyframeActionExecutor {
       boolean hasDiscoveredInputs)
       throws ActionExecutionException, InterruptedException {
     if (actionFileSystem != null) {
-      updateActionFileSystemContext(
-          action,
-          actionFileSystem,
-          outputMetadataStore,
-          compositeInputMetadataProvider.getFilesets());
+      updateActionFileSystemContext(action, actionFileSystem, outputMetadataStore);
     }
 
     ActionExecutionContext actionExecutionContext =
@@ -886,10 +887,7 @@ public final class SkyframeActionExecutor {
             threadStateReceiverFactory.apply(actionLookupData));
     if (actionFileSystem != null) {
       updateActionFileSystemContext(
-          action,
-          actionFileSystem,
-          THROWING_OUTPUT_METADATA_STORE_FOR_ACTIONFS,
-          /* filesets= */ ImmutableMap.of());
+          action, actionFileSystem, THROWING_OUTPUT_METADATA_STORE_FOR_ACTIONFS);
       // Note that when not using ActionFS, a global setup of the parent directories of the OutErr
       // streams is sufficient.
       setupActionFsFileOutErr(fileOutErr, action);

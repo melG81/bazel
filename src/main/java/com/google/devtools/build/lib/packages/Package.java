@@ -40,10 +40,10 @@ import com.google.devtools.build.lib.collect.CollectionUtils;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.packages.Package.Builder.PackageLimits;
 import com.google.devtools.build.lib.packages.Package.Builder.PackageSettings;
 import com.google.devtools.build.lib.packages.TargetRecorder.MacroNamespaceViolationException;
 import com.google.devtools.build.lib.packages.TargetRecorder.NameConflictException;
-import com.google.devtools.build.lib.packages.WorkspaceFileValue.WorkspaceFileKey;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
@@ -166,6 +166,17 @@ public class Package extends Packageoid {
   private OptionalInt firstWorkspaceSuffixRegisteredToolchain;
 
   // ==== Target and macro fields ====
+
+  /**
+   * The collection of all symbolic macro instances defined in this package, indexed by their {@link
+   * MacroInstance#getId id} (not name). Null until the package is fully initialized by its
+   * builder's {@code finishBuild()}.
+   */
+  // TODO(bazel-team): Consider enforcing that macro namespaces are "exclusive", meaning that target
+  // names may only suffix a macro name when the target is created (transitively) within the macro.
+  // This would be a major change that would break the (common) use case where a BUILD file
+  // declares both "foo" and "foo_test".
+  @Nullable private ImmutableSortedMap<String, MacroInstance> macros;
 
   /**
    * A map from names of targets declared in a symbolic macro which violate macro naming rules, such
@@ -709,7 +720,8 @@ public class Package extends Packageoid {
       @Nullable ConfigSettingVisibilityPolicy configSettingVisibilityPolicy,
       @Nullable Globber globber,
       boolean enableNameConflictChecking,
-      boolean trackFullMacroInformation) {
+      boolean trackFullMacroInformation,
+      PackageLimits packageLimits) {
     // Determine whether this is for a repo rule package. We shouldn't actually have to do this
     // because newPackageBuilder() is supposed to only be called for normal packages. Unfortunately
     // serialization still uses the same code path for deserializing BUILD and WORKSPACE files,
@@ -742,39 +754,8 @@ public class Package extends Packageoid {
         generatorMap,
         globber,
         enableNameConflictChecking,
-        trackFullMacroInformation);
-  }
-
-  public static Builder newExternalPackageBuilder(
-      PackageSettings packageSettings,
-      WorkspaceFileKey workspaceFileKey,
-      String workspaceName,
-      RepositoryMapping mainRepoMapping,
-      boolean noImplicitFileExport,
-      boolean simplifyUnconditionalSelectsInRuleAttrs,
-      PackageOverheadEstimator packageOverheadEstimator) {
-    return new Builder(
-        Metadata.builder()
-            .packageIdentifier(LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER)
-            .buildFilename(workspaceFileKey.getPath())
-            .isRepoRulePackage(true)
-            .repositoryMapping(mainRepoMapping)
-            .succinctTargetNotFoundErrors(packageSettings.succinctTargetNotFoundErrors())
-            .build(),
-        // The SymbolGenerator is based on workspaceFileKey rather than a package id or path,
-        // in order to distinguish different chunks of the same WORKSPACE file.
-        SymbolGenerator.create(workspaceFileKey),
-        packageSettings.precomputeTransitiveLoads(),
-        noImplicitFileExport,
-        simplifyUnconditionalSelectsInRuleAttrs,
-        workspaceName,
-        mainRepoMapping,
-        /* cpuBoundSemaphore= */ null,
-        packageOverheadEstimator,
-        /* generatorMap= */ null,
-        /* globber= */ null,
-        /* enableNameConflictChecking= */ true,
-        /* trackFullMacroInformation= */ true);
+        trackFullMacroInformation,
+        packageLimits);
   }
 
   // Bzlmod creates one fake package per external repository. The repos created by a given
@@ -814,7 +795,8 @@ public class Package extends Packageoid {
             /* generatorMap= */ null,
             /* globber= */ null,
             /* enableNameConflictChecking= */ true,
-            /* trackFullMacroInformation= */ true)
+            /* trackFullMacroInformation= */ true,
+            PackageLimits.DEFAULTS)
         .setLoads(ImmutableList.of());
   }
 
@@ -1168,7 +1150,8 @@ public class Package extends Packageoid {
         @Nullable Globber globber,
         boolean enableNameConflictChecking,
         boolean trackFullMacroInformation,
-        boolean enableTargetMapSnapshotting) {
+        boolean enableTargetMapSnapshotting,
+        PackageLimits packageLimits) {
       super(
           metadata,
           pkg,
@@ -1182,7 +1165,8 @@ public class Package extends Packageoid {
           globber,
           enableNameConflictChecking,
           trackFullMacroInformation,
-          enableTargetMapSnapshotting);
+          enableTargetMapSnapshotting,
+          packageLimits);
       this.precomputeTransitiveLoads = precomputeTransitiveLoads;
       this.noImplicitFileExport = noImplicitFileExport;
       if (metadata.getName().startsWith("javatests/")) {
@@ -1241,6 +1225,37 @@ public class Package extends Packageoid {
       PackageSettings DEFAULTS = new PackageSettings() {};
     }
 
+    /** A bundle of options affecting resource limits on package construction. */
+    public interface PackageLimits {
+      /**
+       * The maximum number of Starlark computation steps that are allowed to be executed while
+       * building a package (or, transitively, any package piece). If this limit is exceeded, the
+       * package or package piece immediately stops building.
+       *
+       * <p>Confusingly, for historical Google-specific reasons, this limit is <em>not</em> the same
+       * as {@code --max_computation_steps}.
+       *
+       * <ul>
+       *   <li>This limit (maxStarlarkComputationStepsPerPackage) is only set by Google-specific
+       *       logic, is currently not used in open-source Bazel, and exceeding the limit causes the
+       *       package builder to immediately stop and print a stack trace. The intent is to harden
+       *       infrastructure against runaway Starlark computations.
+       *   <li>By contrast, {@code --max_computation_steps} is enforced by {@link PackageFactory}
+       *       post-factum, after the package has been built. The intent is to enforce code health
+       *       by limiting the complexity of packages in a repo.
+       * </ul>
+       *
+       * <p>If lazy symbolic macro expansion is enabled, unless a complete {@link Package} is
+       * loaded, the limit is enforced only per package piece.
+       */
+      // TODO(b/417468797): merge with --max_computation_steps enforcement.
+      default long maxStarlarkComputationStepsPerPackage() {
+        return Long.MAX_VALUE;
+      }
+
+      public static final PackageLimits DEFAULTS = new PackageLimits() {};
+    }
+
     // The map from each repository to that repository's remappings map.
     // This is only used in the //external package, it is an empty map for all other packages.
     private final HashMap<RepositoryName, LinkedHashMap<String, RepositoryName>>
@@ -1291,7 +1306,8 @@ public class Package extends Packageoid {
         @Nullable ImmutableMap<Location, String> generatorMap,
         @Nullable Globber globber,
         boolean enableNameConflictChecking,
-        boolean trackFullMacroInformation) {
+        boolean trackFullMacroInformation,
+        PackageLimits packageLimits) {
       super(
           metadata,
           new Package(metadata),
@@ -1307,7 +1323,8 @@ public class Package extends Packageoid {
           globber,
           enableNameConflictChecking,
           trackFullMacroInformation,
-          /* enableTargetMapSnapshotting= */ true);
+          /* enableTargetMapSnapshotting= */ true,
+          packageLimits);
     }
 
     /** Retrieves this object from a Starlark thread. Returns null if not present. */
@@ -1412,12 +1429,6 @@ public class Package extends Packageoid {
       }
     }
 
-    /** Sets the number of Starlark computation steps executed by this BUILD file. */
-    @Override
-    void setComputationSteps(long n) {
-      getPackage().computationSteps = n;
-    }
-
     void replaceTarget(Target newTarget) {
       Preconditions.checkArgument(
           newTarget.getPackage() == pkg, // pointer comparison since we're constructing `pkg`
@@ -1503,12 +1514,14 @@ public class Package extends Packageoid {
     }
 
     /**
-     * Ensures that all symbolic macros in the package have expanded.
+     * Ensures that all symbolic macros in an error-free package have expanded. No-op if the package
+     * already {@link #containsErrors}.
      *
      * <p>This does not run any macro that has already been evaluated. It *does* run macros that are
      * newly discovered during the operation of this method.
      */
-    public void expandAllRemainingMacros(StarlarkSemantics semantics) throws InterruptedException {
+    public void expandAllRemainingMacros(StarlarkSemantics semantics)
+        throws EvalException, InterruptedException {
       // TODO: #19922 - Protect against unreasonable macro stack depth and large numbers of symbolic
       // macros overall, for both the eager and deferred evaluation strategies.
 
@@ -1519,8 +1532,9 @@ public class Package extends Packageoid {
       // longer a concern, we will want to support delayed expansion of non-finalizer macros before
       // the finalizer expansion step.
 
-      // Finalizer expansion step.
-      if (!unexpandedMacros.isEmpty()) {
+      // Finalizer expansion step. Requires that the package not be in error (no point in finalizing
+      // a package that already threw an EvalException).
+      if (!containsErrors() && !unexpandedMacros.isEmpty()) {
         Preconditions.checkState(
             unexpandedMacros.stream()
                 .allMatch(id -> recorder.getMacroMap().get(id).getMacroClass().isFinalizer()),
@@ -1548,16 +1562,16 @@ public class Package extends Packageoid {
     @Override
     @CanIgnoreReturnValue
     protected Builder beforeBuild() throws NoSuchPackageException {
-      // For correct semantics, we refuse to build a package that has declared symbolic macros that
-      // have not yet been expanded. (Currently finalizers are the only use case where this happens,
-      // but the Package logic is agnostic to that detail.)
+      // For correct semantics, we refuse to build a package that hasn't thrown any EvalExceptions
+      // but has declared symbolic macros that have not yet been expanded. (Currently finalizers are
+      // the only use case where this happens, but the Package logic is agnostic to that detail.)
       //
       // Production code should be calling expandAllRemainingMacros() to guarantee that nothing is
       // left unexpanded. Tests that do not declare any symbolic macros need not make the call.
       // Package deserialization doesn't have to do it either, since we shouldn't be evaluating
       // symbolic macros on the deserialized result of an already evaluated package.
       Preconditions.checkState(
-          unexpandedMacros.isEmpty(),
+          unexpandedMacros.isEmpty() || containsErrors(),
           "Cannot build a package with unexpanded symbolic macros; call"
               + " expandAllRemainingMacros()");
 
@@ -1598,6 +1612,8 @@ public class Package extends Packageoid {
     protected void packageoidInitializationHook() {
       super.packageoidInitializationHook();
       Package pkg = getPackage();
+      pkg.computationSteps = getComputationSteps();
+      pkg.macros = ImmutableSortedMap.copyOf(recorder.getMacroMap());
       pkg.macroNamespaceViolatingTargets =
           ImmutableMap.copyOf(recorder.getMacroNamespaceViolatingTargets());
       pkg.targetsToDeclaringMacro =

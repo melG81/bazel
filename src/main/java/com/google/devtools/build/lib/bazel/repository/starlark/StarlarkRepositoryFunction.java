@@ -63,6 +63,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Mutability;
 import net.starlark.java.eval.Starlark;
@@ -120,6 +121,10 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
     }
   }
 
+  private static class State extends WorkerSkyKeyComputeState<FetchResult> {
+    @Nullable FetchResult result;
+  }
+
   private record FetchArgs(
       Rule rule, Path outputDirectory, BlazeDirectories directories, Environment env, SkyKey key) {
     FetchArgs toWorkerArgs(Environment env) {
@@ -138,15 +143,23 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
     }
     // See below (the `catch CancellationException` clause) for why there's a `while` loop here.
     while (true) {
-      var state = env.getState(WorkerSkyKeyComputeState<FetchResult>::new);
+      var state = env.getState(State::new);
+      if (state.result != null) {
+        // Escape early if we've already finished fetching once. This can happen if
+        // RepositoryDelegatorFunction triggers a Skyframe restart _after_
+        // StarlarkRepositoryFunction#fetch is finished.
+        return state.result;
+      }
       try {
-        return state.startOrContinueWork(
-            env,
-            "starlark-repository-" + rule.getName(),
-            (workerEnv) -> {
-              setupRepoRoot(outputDirectory);
-              return fetchInternal(args.toWorkerArgs(workerEnv));
-            });
+        state.result =
+            state.startOrContinueWork(
+                env,
+                "starlark-repository-" + rule.getName(),
+                (workerEnv) -> {
+                  setupRepoRoot(outputDirectory);
+                  return fetchInternal(args.toWorkerArgs(workerEnv));
+                });
+        return state.result;
       } catch (ExecutionException e) {
         Throwables.throwIfInstanceOf(e.getCause(), RepositoryFunctionException.class);
         Throwables.throwIfInstanceOf(e.getCause(), InterruptedException.class);
@@ -222,6 +235,7 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
     }
 
     Map<RepoRecordedInput, String> recordedInputValues = new LinkedHashMap<>();
+    RepoMetadata repoMetadata;
     try (Mutability mu = Mutability.create("Starlark repository");
         StarlarkRepositoryContext starlarkRepositoryContext =
             new StarlarkRepositoryContext(
@@ -276,9 +290,18 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
         starlarkRepositoryContext.markSuccessful();
       }
 
+      repoMetadata =
+          switch (result) {
+            case Dict<?, ?> dict -> new RepoMetadata(Reproducibility.NO, dict);
+            case RepoMetadata rm -> rm;
+            default -> RepoMetadata.NONREPRODUCIBLE;
+          };
       RepositoryResolvedEvent resolved =
           new RepositoryResolvedEvent(
-              rule, starlarkRepositoryContext.getAttr(), outputDirectory, result);
+              rule,
+              starlarkRepositoryContext.getAttr(),
+              outputDirectory,
+              repoMetadata.attrsForReproducibility());
       if (resolved.isNewInformationReturned()) {
         env.getListener().handle(Event.debug(resolved.getMessage()));
         env.getListener().handle(Event.debug(defInfo));
@@ -352,7 +375,7 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
       }
     }
 
-    return new FetchResult(recordedInputValues);
+    return new FetchResult(recordedInputValues, repoMetadata.reproducible());
   }
 
   @SuppressWarnings("unchecked")

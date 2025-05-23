@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bazel.bzlmod.BzlmodRepoRuleValue;
 import com.google.devtools.build.lib.bazel.bzlmod.VendorFileValue;
 import com.google.devtools.build.lib.bazel.repository.cache.RepoContentsCache;
+import com.google.devtools.build.lib.bazel.repository.cache.RepoContentsCache.CandidateRepo;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.Rule;
@@ -35,14 +36,13 @@ import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
-import com.google.devtools.build.lib.repository.ExternalPackageException;
 import com.google.devtools.build.lib.repository.ExternalPackageHelper;
-import com.google.devtools.build.lib.repository.ExternalRuleNotFoundException;
 import com.google.devtools.build.lib.repository.RepositoryFailedEvent;
 import com.google.devtools.build.lib.repository.RepositoryFetchProgress;
 import com.google.devtools.build.lib.rules.repository.RepoRecordedInput.NeverUpToDateRepoRecordedInput;
 import com.google.devtools.build.lib.rules.repository.RepositoryFunction.AlreadyReportedRepositoryAccessException;
 import com.google.devtools.build.lib.rules.repository.RepositoryFunction.RepositoryFunctionException;
+import com.google.devtools.build.lib.rules.repository.RepositoryFunction.Reproducibility;
 import com.google.devtools.build.lib.skyframe.AlreadyReportedException;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue.Precomputed;
@@ -170,7 +170,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
             repositoryName);
       }
 
-      Rule rule = getRepositoryRule(env, repositoryName, starlarkSemantics);
+      Rule rule = getRepositoryRule(env, repositoryName);
       if (env.valuesMissing()) {
         return null;
       }
@@ -216,7 +216,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
       String predeclaredInputHash =
           DigestWriter.computePredeclaredInputHash(rule, starlarkSemantics);
 
-      if (shouldUseCachedRepos(env, handler, repoRoot, rule)) {
+      if (shouldUseCachedRepos(env, handler, rule)) {
         // Make sure marker file is up-to-date; correctly describes the current repository state
         var repoState = digestWriter.areRepositoryAndMarkerFileConsistent(handler, env);
         if (repoState == null) {
@@ -229,21 +229,23 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
 
         // Then check if the global repo contents cache has this.
         if (repoContentsCache.isEnabled()) {
-          repoState =
-              digestWriter.areRepositoryAndMarkerFileConsistent(
-                  handler, env, repoContentsCache.recordedInputsFile(predeclaredInputHash));
-          if (repoState == null) {
-            return null;
-          }
-          if (repoState instanceof DigestWriter.RepoDirectoryState.UpToDate) {
-            var unused =
-                setupOverride(
-                    repoContentsCache.contentsDir(predeclaredInputHash).asFragment(),
-                    env,
-                    repoRoot,
-                    repositoryName);
-            return new RepositoryDirectoryValue.Success(
-                repoRoot, /* isFetchingDelayed= */ false, excludeRepoFromVendoring);
+          for (CandidateRepo candidate :
+              repoContentsCache.getCandidateRepos(predeclaredInputHash)) {
+            repoState =
+                digestWriter.areRepositoryAndMarkerFileConsistent(
+                    handler, env, candidate.recordedInputsFile());
+            if (repoState == null) {
+              return null;
+            }
+            if (repoState instanceof DigestWriter.RepoDirectoryState.UpToDate) {
+              if (setupOverride(candidate.contentsDir().asFragment(), env, repoRoot, repositoryName)
+                  == null) {
+                return null;
+              }
+              candidate.touch();
+              return new RepositoryDirectoryValue.Success(
+                  repoRoot, /* isFetchingDelayed= */ false, excludeRepoFromVendoring);
+            }
           }
         }
       }
@@ -262,11 +264,34 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
         if (result == null) {
           return null;
         }
-        // No new Skyframe dependencies must be added between calling the repository implementation
-        // and writing the marker file because if they aren't computed, it would cause a Skyframe
-        // restart thus calling the possibly very slow (networking, decompression...) fetch()
-        // operation again. So we write the marker file here immediately.
         digestWriter.writeMarkerFile(result.recordedInputValues());
+        if (repoContentsCache.isEnabled()
+            && result.reproducible() == Reproducibility.YES
+            && !handler.isLocal(rule)) {
+          // This repo is eligible for the repo contents cache.
+          Path cachedRepoDir;
+          try {
+            cachedRepoDir =
+                repoContentsCache.moveToCache(
+                    repoRoot, digestWriter.markerPath, predeclaredInputHash);
+          } catch (IOException e) {
+            throw new RepositoryFunctionException(
+                new IOException(
+                    "error moving repo @@%s into the repo contents cache: %s"
+                        .formatted(rule.getName(), e.getMessage()),
+                    e),
+                Transience.TRANSIENT);
+          }
+          // Don't forget to register a FileValue on the cache repo dir, so that we know to refetch
+          // if the cache entry gets GC'd from under us.
+          if (env.getValue(
+                  FileValue.key(
+                      RootedPath.toRootedPath(
+                          Root.absoluteRoot(cachedRepoDir.getFileSystem()), cachedRepoDir)))
+              == null) {
+            return null;
+          }
+        }
         return new RepositoryDirectoryValue.Success(
             repoRoot, /* isFetchingDelayed= */ false, excludeRepoFromVendoring);
       }
@@ -376,30 +401,16 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
   }
 
   @Nullable
-  private Rule getRepositoryRule(
-      Environment env, RepositoryName repositoryName, StarlarkSemantics starlarkSemantics)
-      throws InterruptedException, RepositoryFunctionException {
-    if (starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_BZLMOD)) {
-      // Tries to get a repository rule instance from Bzlmod generated repos.
-      SkyKey key = BzlmodRepoRuleValue.key(repositoryName);
-      BzlmodRepoRuleValue value = (BzlmodRepoRuleValue) env.getValue(key);
-      if (env.valuesMissing()) {
-        return null;
-      }
-      if (value != BzlmodRepoRuleValue.REPO_RULE_NOT_FOUND_VALUE) {
-        return value.getRule();
-      }
+  private Rule getRepositoryRule(Environment env, RepositoryName repositoryName)
+      throws InterruptedException {
+    SkyKey key = BzlmodRepoRuleValue.key(repositoryName);
+    BzlmodRepoRuleValue value = (BzlmodRepoRuleValue) env.getValue(key);
+    if (env.valuesMissing()) {
+      return null;
     }
-
-    if (starlarkSemantics.getBool(BuildLanguageOptions.ENABLE_WORKSPACE)) {
-      // fallback to look up the repository in the WORKSPACE file.
-      try {
-        return getRepoRuleFromWorkspace(repositoryName, env);
-      } catch (NoSuchRepositoryException e) {
-        return null;
-      }
+    if (value != BzlmodRepoRuleValue.REPO_RULE_NOT_FOUND_VALUE) {
+      return value.getRule();
     }
-
     return null;
   }
 
@@ -418,8 +429,7 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
   }
 
   /* Determines whether we should use the cached repositories */
-  private boolean shouldUseCachedRepos(
-      Environment env, RepositoryFunction handler, Path repoRoot, Rule rule)
+  private boolean shouldUseCachedRepos(Environment env, RepositoryFunction handler, Rule rule)
       throws InterruptedException {
     boolean forceFetchEnabled = !FORCE_FETCH.get(env).isEmpty();
     boolean forceFetchConfigureEnabled =
@@ -434,9 +444,8 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
 
     /* For the non-local repositories, do NOT use cache if:
      * 1) Force fetch is enabled (bazel sync, or bazel fetch --force), OR
-     * 2) Force fetch configure is enabled (bazel sync --configure), OR
-     * 3) Repository directory does not exist */
-    if (forceFetchEnabled || forceFetchConfigureEnabled || !repoRoot.exists()) {
+     * 2) Force fetch configure is enabled (bazel sync --configure) */
+    if (forceFetchEnabled || forceFetchConfigureEnabled) {
       return false;
     }
 
@@ -487,24 +496,6 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
     }
     env.getListener().post(RepositoryFetchProgress.finished(repoName));
     return Preconditions.checkNotNull(result);
-  }
-
-  /**
-   * Uses a remote repository name to fetch the corresponding Rule describing how to get it. This
-   * should be called from {@link SkyFunction#compute} functions, which should return null if this
-   * returns null.
-   */
-  @Nullable
-  private Rule getRepoRuleFromWorkspace(RepositoryName repositoryName, Environment env)
-      throws InterruptedException, RepositoryFunctionException, NoSuchRepositoryException {
-    try {
-      return externalPackageHelper.getRuleByName(repositoryName.getName(), env);
-    } catch (ExternalRuleNotFoundException e) {
-      // This is caught and handled immediately in compute().
-      throw new NoSuchRepositoryException();
-    } catch (ExternalPackageException e) {
-      throw new RepositoryFunctionException(e);
-    }
   }
 
   @Nullable
@@ -782,7 +773,4 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
       }
     }
   }
-
-  /** Marker exception for the case where a repository is not defined. */
-  private static final class NoSuchRepositoryException extends Exception {}
 }

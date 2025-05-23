@@ -313,24 +313,14 @@ public final class CppConfiguration extends Fragment
     this.appleGenerateDsym = cppOptions.appleGenerateDsym;
   }
 
-  /** Returns the label of the <code>cc_compiler</code> rule for the C++ configuration. */
-  @StarlarkConfigurationField(
-      name = "cc_toolchain",
-      doc = "The label of the target describing the C++ toolchain",
-      defaultLabel = "//tools/cpp:toolchain",
-      defaultInToolRepository = true)
-  @Nullable
-  public Label getRuleProvidingCcToolchainProvider() {
-      return null;
-  }
-
   @Nullable
   @StarlarkConfigurationField(name = "zipper", doc = "The zipper label for FDO.")
   public Label getFdoZipper() {
     if (getFdoOptimizeLabel() != null
         || getFdoProfileLabel() != null
         || fdoPath != null
-        || getMemProfProfileLabel() != null) {
+        || getMemProfProfileLabel() != null
+        || getXFdoProfileLabel() != null) {
       return Label.parseCanonicalUnchecked(BAZEL_TOOLS_REPO + "//tools/zip:unzip_fdo");
     }
     return null;
@@ -364,6 +354,7 @@ public final class CppConfiguration extends Fragment
   }
 
   /** Returns the set of command-line LTO backend options. */
+  @StarlarkMethod(name = "lto_backend_options", documented = false, structField = true)
   public ImmutableList<String> getLtoBackendOptions() {
     return ltobackendOptions;
   }

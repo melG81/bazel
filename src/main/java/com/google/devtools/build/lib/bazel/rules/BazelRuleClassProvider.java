@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.bazel.rules;
 
+import static com.google.devtools.build.lib.util.StringEncoding.platformToInternal;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
@@ -36,6 +37,7 @@ import com.google.devtools.build.lib.bazel.BazelConfiguration;
 import com.google.devtools.build.lib.bazel.repository.LocalConfigPlatformRule;
 import com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins;
 import com.google.devtools.build.lib.bazel.rules.python.BazelPythonConfiguration;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.packages.PackageCallable;
 import com.google.devtools.build.lib.rules.android.AndroidConfiguration;
@@ -54,7 +56,6 @@ import com.google.devtools.build.lib.rules.repository.NewLocalRepositoryRule;
 import com.google.devtools.build.lib.rules.test.TestingSupportRules;
 import com.google.devtools.build.lib.starlarkbuildapi.android.AndroidBootstrap;
 import com.google.devtools.build.lib.starlarkbuildapi.core.ContextGuardedValue;
-import com.google.devtools.build.lib.starlarkbuildapi.python.PyBootstrap;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.ResourceFileLoader;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -99,9 +100,10 @@ public class BazelRuleClassProvider {
           .buildOrThrow();
 
   /**
-   * {@link BuildConfigurationFunction} constructs {@link BuildOptions} out of the options required
-   * by the registered fragments. We create and register this fragment exclusively to ensure {@link
-   * StrictActionEnvOptions} is always available.
+   * {@link com.google.devtools.build.lib.skyframe.config.BuildConfigurationFunction} constructs
+   * {@link BuildOptions} out of the options required by the registered fragments. We create and
+   * register this fragment exclusively to ensure {@link StrictActionEnvOptions} is always
+   * available.
    */
   @RequiresOptions(options = {StrictActionEnvOptions.class})
   public static class StrictActionEnvConfiguration extends Fragment {
@@ -117,7 +119,7 @@ public class BazelRuleClassProvider {
     // Honor BAZEL_SH env variable for backwards compatibility.
     String path = System.getenv("BAZEL_SH");
     if (path != null) {
-      return PathFragment.create(path);
+      return PathFragment.create(platformToInternal(path));
     }
     return null;
   }
@@ -163,7 +165,11 @@ public class BazelRuleClassProvider {
           // that is incorrect. We should enable strict_action_env by default and then remove this
           // code, but that change may break Windows users who are relying on the MSYS root being in
           // the PATH.
-          env.put("PATH", pathOrDefault(os, System.getenv("PATH"), shellExecutable));
+          String pathEnv = System.getenv("PATH");
+          if (pathEnv != null) {
+            pathEnv = platformToInternal(pathEnv);
+          }
+          env.put("PATH", pathOrDefault(os, pathEnv, shellExecutable));
         } else {
           // The previous implementation used System.getenv (which uses the server's environment),
           // and fell back to a hard-coded "/bin:/usr/bin" if PATH was not set.
@@ -282,6 +288,13 @@ public class BazelRuleClassProvider {
 
   public static final RuleSet PYTHON_RULES =
       new RuleSet() {
+        public static final ImmutableSet<PackageIdentifier> allowedRepositories =
+            ImmutableSet.of(
+                PackageIdentifier.createUnchecked("_builtins", ""),
+                PackageIdentifier.createUnchecked("bazel_tools", ""),
+                PackageIdentifier.createUnchecked("rules_python", ""),
+                PackageIdentifier.createUnchecked("", "tools/build_defs/python"));
+
         @Override
         public void init(ConfiguredRuleClassProvider.Builder builder) {
           builder.addConfigurationFragment(PythonConfiguration.class);
@@ -290,8 +303,7 @@ public class BazelRuleClassProvider {
           // This symbol is overridden by exports.bzl
           builder.addBzlToplevel(
               "py_internal",
-              ContextGuardedValue.onlyInAllowedRepos(
-                  Starlark.NONE, PyBootstrap.allowedRepositories));
+              ContextGuardedValue.onlyInAllowedRepos(Starlark.NONE, allowedRepositories));
           builder.addStarlarkBuiltinsInternal(BazelPyBuiltins.NAME, new BazelPyBuiltins());
 
           try {
@@ -399,6 +411,8 @@ public class BazelRuleClassProvider {
     String systemRoot = System.getenv("SYSTEMROOT");
     if (Strings.isNullOrEmpty(systemRoot)) {
       systemRoot = "C:\\Windows";
+    } else {
+      systemRoot = platformToInternal(systemRoot);
     }
     newPath += ";" + systemRoot;
     newPath += ";" + systemRoot + "\\System32";

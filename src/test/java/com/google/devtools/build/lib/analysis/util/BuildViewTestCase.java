@@ -153,7 +153,6 @@ import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.DiffAwareness;
 import com.google.devtools.build.lib.skyframe.PackageFunction;
-import com.google.devtools.build.lib.skyframe.PackageRootsNoSymlinkCreation;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.SkyFunctionEnvironmentForTesting;
@@ -670,7 +669,8 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     view = new BuildViewForTesting(directories, ruleClassProvider, skyframeExecutor, null);
     view.setConfigurationForTesting(targetConfig);
 
-    view.setArtifactRoots(new PackageRootsNoSymlinkCreation(Root.fromPath(rootDirectory)));
+    Root root = Root.fromPath(rootDirectory);
+    view.getArtifactFactory().setPackageRoots(pkgId -> root);
   }
 
   protected CachingAnalysisEnvironment getTestAnalysisEnvironment() throws InterruptedException {
@@ -2234,22 +2234,25 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
 
   protected ImmutableList<String> baselineCoverageArtifactBasenames(ConfiguredTarget target)
       throws Exception {
-    Artifact baselineCoverage =
-        target.get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR).getBaselineCoverageArtifact();
-    if (baselineCoverage == null) {
-      return ImmutableList.of();
-    }
-    ImmutableList.Builder<String> basenames = ImmutableList.builder();
-    var baselineCoverageAction = (BaselineCoverageAction) getGeneratingAction(baselineCoverage);
-    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-    baselineCoverageAction
-        .newDeterministicWriter(ActionsTestUtil.createContext(reporter))
-        .writeTo(bytes);
+    ImmutableList<Artifact> baselineCoverageArtifacts =
+        target
+            .get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR)
+            .getBaselineCoverageArtifacts()
+            .toList();
 
-    for (String line : Splitter.on('\n').split(bytes.toString(UTF_8))) {
-      if (line.startsWith("SF:")) {
-        String basename = line.substring(line.lastIndexOf('/') + 1);
-        basenames.add(basename);
+    ImmutableList.Builder<String> basenames = ImmutableList.builder();
+    for (Artifact baselineCoverage : baselineCoverageArtifacts) {
+      var baselineCoverageAction = (BaselineCoverageAction) getGeneratingAction(baselineCoverage);
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      baselineCoverageAction
+          .newDeterministicWriter(ActionsTestUtil.createContext(reporter))
+          .writeTo(bytes);
+
+      for (String line : Splitter.on('\n').split(bytes.toString(UTF_8))) {
+        if (line.startsWith("SF:")) {
+          String basename = line.substring(line.lastIndexOf('/') + 1);
+          basenames.add(basename);
+        }
       }
     }
     return basenames.build();

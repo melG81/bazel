@@ -1245,6 +1245,29 @@ java_test(
 )
 
 java_test(
+    name = "EvalMacroFunctionTest",
+    timeout = "moderate",
+    srcs = ["EvalMacroFunctionTest.java"],
+    test_class = "com.google.devtools.build.lib.AllTests",
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/cmdline",
+        "//src/main/java/com/google/devtools/build/lib/packages",
+        "//src/main/java/com/google/devtools/build/lib/packages:package_piece_identifier",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:package_value",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:skyframe_cluster",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//src/test/java/com/google/devtools/build/lib:test_runner",  # unuseddeps: keep buildcleaner: keep
+        "//src/test/java/com/google/devtools/build/lib/analysis/util",
+        "//src/test/java/com/google/devtools/build/lib/skyframe/util:SkyframeExecutorTestUtils",
+        "//third_party:error_prone_annotations",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:truth",
+        "@maven//:com_google_testparameterinjector_test_parameter_injector",
+    ],
+)
+
+java_test(
     name = "DirtinessCheckerUtilsTest",
     timeout = "short",
     srcs = ["DirtinessCheckerUtilsTest.java"],
@@ -1905,6 +1928,23 @@ java_test(
 )
 
 java_test(
+    name = "SourceDirectoryIntegrationTest",
+    srcs = ["SourceDirectoryIntegrationTest.java"],
+    jvm_flags = [
+        "-DBAZEL_TRACK_SOURCE_DIRECTORIES=1",
+    ],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/events",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//src/test/java/com/google/devtools/build/lib/buildtool/util",
+        "//third_party:guava",
+        "//third_party:junit4",
+    ],
+)
+
+java_test(
     name = "FileArtifactValueTest",
     timeout = "short",
     srcs = ["FileArtifactValueTest.java"],
@@ -2129,5 +2169,30 @@ java_test(
         "//third_party:junit4",
         "//third_party:truth",
         "@maven//:com_google_testparameterinjector_test_parameter_injector",
+    ],
+)
+
+java_test(
+    name = "SkyframeInputMetadataProviderTest",
+    srcs = ["SkyframeInputMetadataProviderTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/actions",
+        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_data",
+        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
+        "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
+        "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
+        "//src/main/java/com/google/devtools/build/lib/collect/nestedset",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:action_execution_value",
+        "//src/main/java/com/google/devtools/build/lib/skyframe:skyframe_input_metadata_provider",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
+        "//src/main/java/com/google/devtools/build/skyframe",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//src/test/java/com/google/devtools/build/lib/actions/util",
+        "//src/test/java/com/google/devtools/build/lib/testutil",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:mockito",
+        "//third_party:truth",
     ],
 )

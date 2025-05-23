@@ -24,12 +24,12 @@ import com.google.common.hash.HashCode;
 import com.google.common.primitives.Bytes;
 import com.google.common.primitives.Longs;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.devtools.build.lib.concurrent.RequestBatcher;
 import com.google.devtools.build.lib.skyframe.serialization.FingerprintValueStore.MissingFingerprintValueException;
+import com.google.devtools.build.lib.skyframe.serialization.SharedValueDeserializationContext.StateEvictedException;
 import com.google.devtools.build.lib.skyframe.serialization.analysis.ClientId;
+import com.google.devtools.build.lib.skyframe.serialization.analysis.RemoteAnalysisCacheClient;
 import com.google.devtools.build.lib.skyframe.serialization.proto.DataType;
 import com.google.devtools.build.skyframe.IntVersion;
-import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyFunction.Environment.SkyKeyComputeState;
 import com.google.devtools.build.skyframe.SkyFunction.LookupEnvironment;
@@ -64,7 +64,12 @@ public final class SkyValueRetriever {
 
   /** A {@link SerializationStateProvider} implemented as a {@link SkyKeyComputeState}. */
   public interface SerializableSkyKeyComputeState
-      extends SerializationStateProvider, SkyKeyComputeState {}
+      extends SerializationStateProvider, SkyKeyComputeState {
+    @Override
+    default void close() {
+      getSerializationState().cleanupSerializationState();
+    }
+  }
 
   /** Returned status of {@link DependOnFutureShim#dependOnFuture}. */
   public enum ObservedFutureStatus {
@@ -114,6 +119,8 @@ public final class SkyValueRetriever {
   /**
    * Opaque state of serialization.
    *
+   * <p>Clients must call {@link cleanupSerializationState} if state is evicted.
+   *
    * <p>Each permitted type corresponds to a mostly sequential state.
    *
    * <ol>
@@ -154,7 +161,9 @@ public final class SkyValueRetriever {
           SkyValueRetriever.WaitingForLookupContinuation,
           SkyValueRetriever.WaitingForFutureResult,
           SkyValueRetriever.NoCachedData,
-          SkyValueRetriever.RetrievedValue {}
+          SkyValueRetriever.RetrievedValue {
+    default void cleanupSerializationState() {}
+  }
 
   /** Return value of {@link #tryRetrieve}. */
   public sealed interface RetrievalResult
@@ -202,7 +211,7 @@ public final class SkyValueRetriever {
       DependOnFutureShim futuresShim,
       ObjectCodecs codecs,
       FingerprintValueService fingerprintValueService,
-      @Nullable RequestBatcher<ByteString, ByteString> analysisCacheClient,
+      @Nullable RemoteAnalysisCacheClient analysisCacheClient,
       SkyKey key,
       SerializationStateProvider stateProvider,
       FrontierNodeVersion frontierNodeVersion)
@@ -229,7 +238,7 @@ public final class SkyValueRetriever {
                 responseFuture = futureValueBytes;
               } else {
                 ListenableFuture<ByteString> futureResponseBytes =
-                    analysisCacheClient.submit(ByteString.copyFrom(cacheKey.toBytes()));
+                    analysisCacheClient.lookup(ByteString.copyFrom(cacheKey.toBytes()));
 
                 nextState = new WaitingForCacheServiceResponse(futureResponseBytes);
                 responseFuture = futureResponseBytes;
@@ -424,7 +433,12 @@ public final class SkyValueRetriever {
 
   @VisibleForTesting
   record WaitingForLookupContinuation(SkyframeLookupContinuation continuation)
-      implements SerializationState {}
+      implements SerializationState {
+    @Override
+    public void cleanupSerializationState() {
+      continuation.abandon(new StateEvictedException());
+    }
+  }
 
   @VisibleForTesting
   record WaitingForFutureResult(ListenableFuture<?> futureResult) implements SerializationState {}
@@ -436,16 +450,19 @@ public final class SkyValueRetriever {
     public static final FrontierNodeVersion CONSTANT_FOR_TESTING =
         new FrontierNodeVersion(
             "123",
-            "string_for_testing",
             HashCode.fromInt(42),
             IntVersion.of(9000),
+            "distinguisher",
             Optional.of(new ClientId("for_testing", 123)));
 
     // Fingerprints of version components.
     private final byte[] topLevelConfigFingerprint;
-    private final byte[] directoryMatcherFingerprint;
     private final byte[] blazeInstallMD5Fingerprint;
     private final byte[] evaluatingVersionFingerprint;
+
+    // Fingerprint of the distinguisher for allowing test cases to share a
+    // static cache.
+    private final byte[] distinguisherBytesForTesting;
 
     // Fingerprint of the full version.
     private final byte[] precomputedFingerprint;
@@ -454,21 +471,21 @@ public final class SkyValueRetriever {
 
     public FrontierNodeVersion(
         String topLevelConfigChecksum,
-        String directoryMatcherStringRepr,
         HashCode blazeInstallMD5,
         IntVersion evaluatingVersion,
+        String distinguisherBytesForTesting,
         Optional<ClientId> clientId) {
       // TODO: b/364831651 - add more fields like source and blaze versions.
       this.topLevelConfigFingerprint = topLevelConfigChecksum.getBytes(UTF_8);
-      this.directoryMatcherFingerprint = directoryMatcherStringRepr.getBytes(UTF_8);
       this.blazeInstallMD5Fingerprint = blazeInstallMD5.asBytes();
       this.evaluatingVersionFingerprint = Longs.toByteArray(evaluatingVersion.getVal());
+      this.distinguisherBytesForTesting = distinguisherBytesForTesting.getBytes(UTF_8);
       this.precomputedFingerprint =
           Bytes.concat(
               this.topLevelConfigFingerprint,
-              this.directoryMatcherFingerprint,
               this.blazeInstallMD5Fingerprint,
-              this.evaluatingVersionFingerprint);
+              this.evaluatingVersionFingerprint,
+              this.distinguisherBytesForTesting);
 
       // This is undigested.
       this.clientId = clientId;
@@ -500,9 +517,9 @@ public final class SkyValueRetriever {
     public String toString() {
       return MoreObjects.toStringHelper(this)
           .add("topLevelConfig", Arrays.hashCode(topLevelConfigFingerprint))
-          .add("directoryMatcher", Arrays.hashCode(directoryMatcherFingerprint))
           .add("blazeInstall", Arrays.hashCode(blazeInstallMD5Fingerprint))
           .add("evaluatingVersion", Arrays.hashCode(evaluatingVersionFingerprint))
+          .add("distinguisherBytesForTesting", Arrays.hashCode(distinguisherBytesForTesting))
           .add("precomputed", hashCode())
           .toString();
     }

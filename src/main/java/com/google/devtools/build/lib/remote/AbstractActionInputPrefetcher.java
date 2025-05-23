@@ -378,9 +378,9 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
 
       PathFragment execPath = input.getExecPath();
 
-      // Metadata may legitimately be missing, e.g. if this is an optional test output.
       FileArtifactValue metadata = metadataSupplier.getMetadata(input);
       if (metadata == null || !canDownloadFile(execRoot.getRelative(execPath), metadata)) {
+        // Metadata may legitimately be missing, e.g. if this is an optional spawn output.
         return immediateVoidFuture();
       }
 
@@ -441,19 +441,12 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     }
     SpecialArtifact treeArtifact = treeFile.getParent();
     FileArtifactValue treeMetadata = metadataSupplier.getMetadata(treeArtifact);
-    if (treeMetadata == null) {
-      // There are two cases where tree metadata is legitimately not available:
-      // (1) If the file is the output of an action expanded from an action template. In this
-      //     case, the symlink optimization is intentionally not supported.
-      // (2) If the file is part of an input fileset. In this case, a symlink has already been
-      //     created, but we're currently unable to prefetch the file(s) it points to.
-      // TODO: b/401575099 - Treating fileset more like runfiles could make the tree metadata
-      //  available for case (2).
-      return null;
-    }
-    PathFragment resolvedPath = treeMetadata.getResolvedPath();
-    if (resolvedPath != null) {
-      return resolvedPath.relativeTo(execRoot.asFragment());
+    // Metadata may legitimately be missing, e.g. if this is an optional spawn output.
+    if (treeMetadata != null) {
+      PathFragment resolvedPath = treeMetadata.getResolvedPath();
+      if (resolvedPath != null) {
+        return resolvedPath.relativeTo(execRoot.asFragment());
+      }
     }
     return treeArtifact.getExecPath();
   }
@@ -468,24 +461,15 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
    */
   @Nullable
   private Symlink maybeGetSymlink(
-      ActionInput input,
-      FileArtifactValue metadata,
-      MetadataSupplier metadataSupplier)
+      ActionInput input, FileArtifactValue metadata, MetadataSupplier metadataSupplier)
       throws IOException, InterruptedException {
     if (input instanceof TreeFileArtifact treeFile) {
       SpecialArtifact treeArtifact = treeFile.getParent();
       FileArtifactValue treeMetadata = metadataSupplier.getMetadata(treeArtifact);
-      if (treeMetadata == null) {
-        // There are two cases where tree metadata is legitimately not available:
-        // (1) If the file is the output of an action expanded from an action template. In this
-        //     case, the symlink optimization is intentionally not supported.
-        // (2) If the file is part of an input fileset. In this case, a symlink has already been
-        //     created, but we're currently unable to prefetch the file(s) it points to.
-        // TODO: b/401575099 - Treating fileset more like runfiles could make the tree metadata
-        //  available for case (2).
-        return null;
+      // Metadata may legitimately be missing, e.g. if this is an optional spawn output.
+      if (treeMetadata != null) {
+        return maybeGetSymlink(treeArtifact, treeMetadata, metadataSupplier);
       }
-      return maybeGetSymlink(treeArtifact, treeMetadata, metadataSupplier);
     }
     PathFragment execPath = input.getExecPath();
     PathFragment resolvedExecPath = execPath;
@@ -624,16 +608,14 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       // parent directory after prefetching.
       directoryTracker.setTemporarilyWritable(parentDir);
     } else {
-      // There are three cases:
+      // One of the following must apply:
       //   (1) The file does not belong to a tree artifact.
       //   (2) The file belongs to a tree artifact created by an action template expansion.
-      //   (3) The file belongs to a tree artifact but we don't know it. This can occur when the
-      //       file belongs to a tree artifact inside a fileset (see b/254844173).
       // In case (1), the parent directory is a package or a subdirectory of a package, and should
-      // remain writable. In cases (2) and (3), even though we arguably ought to set the output
-      // permissions on the parent directory to match the outcome of a locally executed action, we
-      // choose not to do it and avoid the additional implementation complexity required to detect a
-      // race condition between concurrent calls touching the same directory.
+      // remain writable. In case (2), even though we arguably ought to set the output permissions
+      // on the parent directory to match local execution, we choose not to do it and avoid the
+      // additional implementation complexity required to detect a race condition between concurrent
+      // calls touching the same directory.
       directoryTracker.setPermanentlyWritable(parentDir);
     }
 
