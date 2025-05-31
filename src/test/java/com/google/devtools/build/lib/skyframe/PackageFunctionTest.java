@@ -213,13 +213,9 @@ public class PackageFunctionTest extends BuildViewTestCase {
     return value;
   }
 
-  private static PackagePieceIdentifier.ForBuildFile getPackagePieceId(String pkg) {
-    PackageIdentifier pkgId = PackageIdentifier.createInMainRepo(pkg);
-    return new PackagePieceIdentifier.ForBuildFile(pkgId, Label.createUnvalidated(pkgId, "BUILD"));
-  }
-
   private SkyKey getSkyKey(String pkg) {
-    return computePackagePiece ? getPackagePieceId(pkg) : PackageIdentifier.createInMainRepo(pkg);
+    PackageIdentifier pkgId = PackageIdentifier.createInMainRepo(pkg);
+    return computePackagePiece ? new PackagePieceIdentifier.ForBuildFile(pkgId) : pkgId;
   }
 
   @CanIgnoreReturnValue
@@ -246,6 +242,8 @@ public class PackageFunctionTest extends BuildViewTestCase {
   @Before
   @Override
   public final void initializeSkyframeExecutor() throws Exception {
+    when(mockPackageValidator.getPackageLimits())
+        .thenReturn(Package.Builder.PackageLimits.DEFAULTS);
     initializeSkyframeExecutor(
         /* doPackageLoadingChecks= */ true,
         /* diffAwarenessFactories= */ ImmutableList.of(),
@@ -332,6 +330,8 @@ public class PackageFunctionTest extends BuildViewTestCase {
 
     invalidatePackages(true);
     reset(mockPackageValidator);
+    when(mockPackageValidator.getPackageLimits())
+        .thenReturn(Package.Builder.PackageLimits.DEFAULTS);
 
     SkyframeExecutorTestUtils.evaluate(
         getSkyframeExecutor(), getSkyKey("pkg"), /* keepGoing= */ false, reporter);

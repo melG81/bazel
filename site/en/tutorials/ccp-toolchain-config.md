@@ -17,7 +17,7 @@ In this tutorial you learn how to:
 *   Configure the C++ toolchain
 *   Create a Starlark rule that provides additional configuration for the
     `cc_toolchain` so that Bazel can build the application with `clang`
-*   Build the C++ binary for by running `bazel build //main:hello-world` on a
+*   Build the C++ binary by running `bazel build //main:hello-world` on a
     Linux machine
 *   Cross-compile the binary for android by running `bazel build
     //main:hello-world --platforms=//:android_x86_64`
@@ -215,7 +215,7 @@ slightly between different versions of clang.
     def _impl(ctx):
         tool_paths = [ # NEW
             tool_path(
-                name = "gcc",
+                name = "gcc",  # Compiler is referenced by the name "gcc" for historic reasons.
                 path = "/usr/bin/clang",
             ),
             tool_path(
@@ -343,7 +343,7 @@ slightly between different versions of clang.
     def _impl(ctx):
         tool_paths = [
             tool_path(
-                name = "gcc",
+                name = "gcc",  # Compiler is referenced by the name "gcc" for historic reasons.
                 path = "/usr/bin/clang",
             ),
             tool_path(

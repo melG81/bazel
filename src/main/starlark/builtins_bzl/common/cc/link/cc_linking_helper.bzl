@@ -23,9 +23,8 @@ load(
     _use_pic_for_dynamic_libs = "use_pic_for_dynamic_libs",
 )
 load(":common/cc/link/cpp_link_action.bzl", "link_action")
-load(":common/cc/link/libraries_to_link_collector.bzl", "LINKING_MODE")
 load(":common/cc/link/lto_indexing_action.bzl", "create_lto_artifacts_and_lto_indexing_action")
-load(":common/cc/link/target_types.bzl", "LINK_TARGET_TYPE", "USE_ARCHIVER", "is_dynamic_library")
+load(":common/cc/link/target_types.bzl", "LINKING_MODE", "LINK_TARGET_TYPE", "USE_ARCHIVER", "is_dynamic_library")
 load(":common/paths.bzl", "paths")
 
 cc_internal = _builtins.internal.cc_internal
@@ -241,6 +240,7 @@ def create_cc_link_actions(
                        disable_whole_archive =
                            feature_configuration.is_enabled("disable_whole_archive_for_static_lib"),
                        alwayslink = alwayslink,
+                       contains_objects = True,
                    ))
             ),
         )
@@ -444,11 +444,18 @@ def _maybe_do_lto_indexing(*, link_type, linking_mode, compilation_outputs, libr
                          not feature_configuration.is_enabled("supports_dynamic_linker")
     prefer_pic_libs = is_dynamic_library(link_type)
 
-    static_libraries_to_link = cc_internal.get_static_libraries(libraries_to_link, prefer_static_libs)
+    static_libraries_to_link = []
+    for lib in libraries_to_link:
+        if prefer_static_libs:
+            if lib.static_library != None or lib.pic_static_library != None:
+                static_libraries_to_link.append(lib)
+        elif lib.interface_library == None and lib.dynamic_library == None:
+            static_libraries_to_link.append(lib)
+
     if not has_lto_bitcode_inputs:
         for lib in static_libraries_to_link:
             pic = (prefer_pic_libs and lib.pic_static_library != None) or lib.static_library == None
-            context = lib.pic_lto_compilation_context() if pic else lib.lto_compilation_context()
+            context = lib._pic_lto_compilation_context if pic else lib._lto_compilation_context
             if context and context.lto_bitcode_inputs():
                 has_lto_bitcode_inputs = True
                 break

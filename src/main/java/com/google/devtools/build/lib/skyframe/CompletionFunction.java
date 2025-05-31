@@ -28,7 +28,6 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.CompletionContext;
 import com.google.devtools.build.lib.actions.CompletionContext.PathResolverFactory;
 import com.google.devtools.build.lib.actions.EventReportingArtifacts;
-import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.ImportantOutputHandler;
 import com.google.devtools.build.lib.actions.ImportantOutputHandler.ImportantOutputException;
 import com.google.devtools.build.lib.actions.ImportantOutputHandler.LostArtifacts;
@@ -43,7 +42,6 @@ import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsInOutputGroup;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.ArtifactsToBuild;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactHelper.SuccessfulArtifactFilter;
-import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.bugreport.BugReporter;
 import com.google.devtools.build.lib.causes.Cause;
@@ -54,6 +52,7 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.Postable;
 import com.google.devtools.build.lib.profiler.GoogleAutoProfilerUtils;
+import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.skyframe.ArtifactFunction.MissingArtifactValue;
 import com.google.devtools.build.lib.skyframe.ArtifactFunction.SourceArtifactException;
 import com.google.devtools.build.lib.skyframe.MetadataConsumerForMetrics.FilesMetricConsumer;
@@ -155,12 +154,6 @@ public final class CompletionFunction<
   @Override
   public SkyValue compute(SkyKey skyKey, Environment env)
       throws CompletionFunctionException, InterruptedException {
-    WorkspaceNameValue workspaceNameValue =
-        (WorkspaceNameValue) env.getValue(WorkspaceNameValue.key());
-    if (workspaceNameValue == null) {
-      return null;
-    }
-
     KeyT key = (KeyT) skyKey;
     Pair<ValueT, ArtifactsToBuild> valueAndArtifactsToBuild = getValueAndArtifactsToBuild(key, env);
     if (env.valuesMissing()) {
@@ -169,21 +162,8 @@ public final class CompletionFunction<
     ValueT value = valueAndArtifactsToBuild.first;
     ArtifactsToBuild artifactsToBuild = valueAndArtifactsToBuild.second;
 
-    // Ensure that coverage artifacts are built before a target is considered completed.
     ImmutableList<Artifact> allArtifacts = artifactsToBuild.getAllArtifacts().toList();
-    InstrumentedFilesInfo instrumentedFilesInfo =
-        value.getConfiguredObject().get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR);
-    Iterable<Artifact> artifactsToRequest = allArtifacts;
-    Artifact baselineCoverage = null;
-    FileArtifactValue baselineCoverageValue = null;
-    if (value.getConfiguredObject() instanceof ConfiguredTarget && instrumentedFilesInfo != null) {
-      baselineCoverage = instrumentedFilesInfo.getBaselineCoverageArtifact();
-      if (baselineCoverage != null) {
-        artifactsToRequest =
-            Iterables.concat(artifactsToRequest, ImmutableList.of(baselineCoverage));
-      }
-    }
-    SkyframeLookupResult inputDeps = env.getValuesAndExceptions(Artifact.keys(artifactsToRequest));
+    SkyframeLookupResult inputDeps = env.getValuesAndExceptions(Artifact.keys(allArtifacts));
 
     boolean allArtifactsAreImportant = artifactsToBuild.areAllOutputGroupsImportant();
 
@@ -211,7 +191,7 @@ public final class CompletionFunction<
     Set<Artifact> builtArtifacts = new HashSet<>();
     // Don't double-count files due to Skyframe restarts.
     FilesMetricConsumer currentConsumer = new FilesMetricConsumer();
-    for (Artifact input : artifactsToRequest) {
+    for (Artifact input : allArtifacts) {
       try {
         SkyValue artifactValue =
             inputDeps.getOrThrow(
@@ -227,9 +207,6 @@ public final class CompletionFunction<
               env,
               value,
               key);
-        } else if (input.equals(baselineCoverage)) {
-          baselineCoverageValue =
-              ((ActionExecutionValue) artifactValue).getExistingFileArtifactValue(baselineCoverage);
         } else {
           builtArtifacts.add(input);
           ActionInputMapHelper.addToMap(
@@ -272,12 +249,10 @@ public final class CompletionFunction<
         CompletionContext.create(
             treeArtifacts,
             inputMap.getFilesets(),
-            baselineCoverageValue,
             key.topLevelArtifactContext().expandFilesets(),
             inputMap,
             importantInputMap,
-            pathResolverFactory,
-            workspaceNameValue.getName());
+            pathResolverFactory);
 
     NestedSet<Cause> rootCauses = rootCausesBuilder.build();
     if (!rootCauses.isEmpty()) {
@@ -442,9 +417,9 @@ public final class CompletionFunction<
     try {
       LostArtifacts lostOutputs;
       try (var ignored =
-          GoogleAutoProfilerUtils.logged(
+          GoogleAutoProfilerUtils.profiledAndLogged(
               "Informing important output handler of top-level outputs for " + label,
-              ImportantOutputHandler.LOG_THRESHOLD)) {
+              ProfilerTask.INFO)) {
         lostOutputs =
             importantOutputHandler.processOutputsAndGetLostArtifacts(
                 key.topLevelArtifactContext().expandFilesets()
