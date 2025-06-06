@@ -8,7 +8,11 @@ package(
 filegroup(
     name = "srcs",
     testonly = 0,
-    srcs = glob(["**"]),
+    srcs = glob(["**"]) + [
+        "//src/test/java/com/google/devtools/build/lib/skyframe/serialization/analysis:srcs",
+        "//src/test/java/com/google/devtools/build/lib/skyframe/serialization/strings:srcs",
+        "//src/test/java/com/google/devtools/build/lib/skyframe/serialization/testutils:srcs",
+    ],
     visibility = ["//src:__subpackages__"],
 )
 
@@ -70,17 +74,6 @@ java_test(
         "//third_party:guava",
         "//third_party:junit4",
         "//third_party:mockito",
-    ],
-)
-
-java_test(
-    name = "WorkspaceNameValueCodecTest",
-    size = "small",
-    srcs = ["WorkspaceNameValueCodecTest.java"],
-    deps = [
-        "//src/main/java/com/google/devtools/build/lib/skyframe:workspace_name_value",
-        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/testutils",
-        "//third_party:junit4",
     ],
 )
 
@@ -437,6 +430,7 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:visible-for-serialization",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:client_id",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/analysis:remote_analysis_cache_client",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec:serialization-constant",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/testutils",

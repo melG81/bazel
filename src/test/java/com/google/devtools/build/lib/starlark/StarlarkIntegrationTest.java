@@ -17,7 +17,6 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.devtools.build.lib.analysis.OutputGroupInfo.INTERNAL_SUFFIX;
-import static com.google.devtools.build.lib.rules.python.PythonTestUtils.getPyLoad;
 import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
 import static org.junit.Assert.assertThrows;
 
@@ -42,6 +41,7 @@ import com.google.devtools.build.lib.analysis.configuredtargets.RuleConfiguredTa
 import com.google.devtools.build.lib.analysis.starlark.StarlarkAttributeTransitionProvider;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleTransitionProvider;
 import com.google.devtools.build.lib.analysis.test.AnalysisTestResultInfo;
+import com.google.devtools.build.lib.analysis.test.BaselineCoverageAction;
 import com.google.devtools.build.lib.analysis.test.InstrumentedFilesInfo;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.analysis.util.DummyTestFragment;
@@ -786,115 +786,7 @@ public class StarlarkIntegrationTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testDefaultInfoFilesAddedToCcBinaryTargetRunfiles() throws Exception {
-    scratch.file(
-        "test/starlark/extension.bzl",
-        """
-        def custom_rule_impl(ctx):
-          out = ctx.actions.declare_file(ctx.attr.name + '.out')
-          ctx.actions.write(out, 'foobar')
-          return [DefaultInfo(files = depset([out]))]
-
-        custom_rule = rule(implementation = custom_rule_impl)
-        """);
-
-    scratch.file(
-        "test/starlark/BUILD",
-        """
-        load('//test/starlark:extension.bzl', 'custom_rule')
-
-        custom_rule(name = 'cr')
-        cc_binary(name = 'binary', data = [':cr'])
-        """);
-
-    useConfiguration("--incompatible_always_include_files_in_data");
-    ConfiguredTarget target = getConfiguredTarget("//test/starlark:binary");
-
-    assertThat(target.getLabel().toString()).isEqualTo("//test/starlark:binary");
-    assertThat(
-            ActionsTestUtil.baseArtifactNames(
-                target.getProvider(RunfilesProvider.class).getDefaultRunfiles().getAllArtifacts()))
-        .contains("cr.out");
-    assertThat(
-            ActionsTestUtil.baseArtifactNames(
-                target.getProvider(RunfilesProvider.class).getDataRunfiles().getAllArtifacts()))
-        .contains("cr.out");
-  }
-
-  @Test
-  public void testDefaultInfoFilesAddedToJavaBinaryTargetRunfiles() throws Exception {
-    scratch.file(
-        "test/starlark/extension.bzl",
-        """
-        def custom_rule_impl(ctx):
-          out = ctx.actions.declare_file(ctx.attr.name + '.out')
-          ctx.actions.write(out, 'foobar')
-          return [DefaultInfo(files = depset([out]))]
-
-        custom_rule = rule(implementation = custom_rule_impl)
-        """);
-
-    scratch.file(
-        "test/starlark/BUILD",
-        """
-        load("@rules_java//java:defs.bzl", "java_binary")
-        load('//test/starlark:extension.bzl', 'custom_rule')
-
-        custom_rule(name = 'cr')
-        java_binary(name = 'binary', data = [':cr'], srcs = ['Foo.java'], main_class = 'Foo')
-        """);
-
-    useConfiguration("--incompatible_always_include_files_in_data");
-    ConfiguredTarget target = getConfiguredTarget("//test/starlark:binary");
-
-    assertThat(target.getLabel().toString()).isEqualTo("//test/starlark:binary");
-    assertThat(
-            ActionsTestUtil.baseArtifactNames(
-                target.getProvider(RunfilesProvider.class).getDefaultRunfiles().getAllArtifacts()))
-        .contains("cr.out");
-    assertThat(
-            ActionsTestUtil.baseArtifactNames(
-                target.getProvider(RunfilesProvider.class).getDataRunfiles().getAllArtifacts()))
-        .contains("cr.out");
-  }
-
-  @Test
-  public void testDefaultInfoFilesAddedToPyBinaryTargetRunfiles() throws Exception {
-    scratch.file(
-        "test/starlark/extension.bzl",
-        """
-        def custom_rule_impl(ctx):
-          out = ctx.actions.declare_file(ctx.attr.name + '.out')
-          ctx.actions.write(out, 'foobar')
-          return [DefaultInfo(files = depset([out]))]
-
-        custom_rule = rule(implementation = custom_rule_impl)
-        """);
-
-    scratch.file(
-        "test/starlark/BUILD",
-        getPyLoad("py_binary"),
-        "load('//test/starlark:extension.bzl', 'custom_rule')",
-        "",
-        "custom_rule(name = 'cr')",
-        "py_binary(name = 'binary', data = [':cr'], srcs = ['binary.py'])");
-
-    useConfiguration("--incompatible_always_include_files_in_data");
-    ConfiguredTarget target = getConfiguredTarget("//test/starlark:binary");
-
-    assertThat(target.getLabel().toString()).isEqualTo("//test/starlark:binary");
-    assertThat(
-            ActionsTestUtil.baseArtifactNames(
-                target.getProvider(RunfilesProvider.class).getDefaultRunfiles().getAllArtifacts()))
-        .contains("cr.out");
-    assertThat(
-            ActionsTestUtil.baseArtifactNames(
-                target.getProvider(RunfilesProvider.class).getDataRunfiles().getAllArtifacts()))
-        .contains("cr.out");
-  }
-
-  @Test
-  public void testDefaultInfoFilesAddedToShBinaryTargetRunfiles() throws Exception {
+  public void testDefaultInfoFilesAddedToFooBinaryTargetRunfiles() throws Exception {
     scratch.file(
         "test/starlark/extension.bzl",
         """
@@ -1149,7 +1041,14 @@ public class StarlarkIntegrationTest extends BuildViewTestCase {
             ActionsTestUtil.baseArtifactNames(
                 customRule
                     .get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR)
-                    .getBaselineCoverageInstrumentedFiles()))
+                    .getBaselineCoverageArtifacts()
+                    .toList()
+                    .stream()
+                    .flatMap(
+                        coverageArtifact ->
+                            ((BaselineCoverageAction) getGeneratingAction(coverageArtifact))
+                                .getInstrumentedFilesForTesting().toList().stream())
+                    .toList()))
         .containsExactly(
             "label_src.txt",
             "label_list_src.txt",
@@ -1176,7 +1075,7 @@ public class StarlarkIntegrationTest extends BuildViewTestCase {
         "  return {",
         "      '//command_line_option:is exec configuration': True,",
         "      '//command_line_option:platforms': [],",
-        // Need to propagate so we don't parse unparseable default @local_config_platform. Remember
+        // Need to propagate so we don't parse unparseable default @platforms//host. Remember
         // the exec transition starts from defaults.
         "      '//command_line_option:host_platform':"
             + " settings['//command_line_option:host_platform'],",
@@ -1440,10 +1339,7 @@ public class StarlarkIntegrationTest extends BuildViewTestCase {
 
         foobar = rule(implementation = rule_impl)
         main_rule = rule(implementation = rule_impl, attrs = {
-            'deps': attr.label_list(providers = [
-                'files', 'data_runfiles', 'default_runfiles',
-                'files_to_run', 'output_groups',
-            ])
+            'deps': attr.label_list(providers = [DefaultInfo, OutputGroupInfo])
         })
         """);
     scratch.file(

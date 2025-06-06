@@ -30,7 +30,6 @@ filegroup(
     srcs = glob(
         ["*"],
         exclude = [
-            "MODULE.bazel.lock",  # Use MODULE.bazel.lock.dist instead
             "bazel-*",  # convenience symlinks
             "out",  # IntelliJ with setup-intellij.sh
             "output",  # output of compile.sh
@@ -60,16 +59,6 @@ filegroup(
 )
 
 filegroup(
-    name = "workspace-deps-bzl",
-    srcs = [
-        ":workspace_deps.bzl",
-    ],
-    visibility = [
-        "//src/test/shell/bazel:__subpackages__",
-    ],
-)
-
-filegroup(
     name = "changelog-file",
     srcs = [":CHANGELOG.md"],
     visibility = [
@@ -83,6 +72,7 @@ genrule(
         "MODULE.bazel",
         "//third_party/remoteapis:MODULE.bazel",
         "//third_party:BUILD",
+        "//third_party:grpc_remove_provides_strings.patch",
         "//third_party:rules_jvm_external_6.5.patch",
         "//third_party:rules_graalvm_fix.patch",
         "//third_party:rules_graalvm_unicode.patch",
@@ -152,9 +142,6 @@ filegroup(
     name = "generated_resources",
     srcs = [
         "//src/main/java/com/google/devtools/build/lib/bazel/rules:builtins_bzl.zip",
-        "//src/main/java/com/google/devtools/build/lib/bazel/rules:coverage.WORKSPACE",
-        "//src/main/java/com/google/devtools/build/lib/bazel/rules:rules_suffix.WORKSPACE",
-        "//src/main/java/com/google/devtools/build/lib/bazel/rules/cpp:cc_configure.WORKSPACE",
     ],
 )
 
@@ -164,6 +151,7 @@ pkg_files(
     srcs = ["//:srcs"],
     attributes = pkg_attributes(mode = "0755"),
     excludes = [
+        "MODULE.bazel.lock",  # Use MODULE.bazel.lock.dist instead
         "//examples:srcs",
         "//site:srcs",
         "//src:srcs-to-exclude-in-distfile",

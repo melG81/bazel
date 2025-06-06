@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright 2016 The Bazel Authors. All rights reserved.
 #
@@ -800,22 +800,6 @@ function test_java_library_runtime_deps_java_sandwich() {
   expect_log "Message from B"
 }
 
-function test_java_import_exports_java_sandwich() {
-  write_files_for_java_provider_in_attr "java_import" "exports"
-  write_java_custom_rule
-
-  bazel run java/com/google/sandwich:Main > $TEST_log || fail "Java sandwich build failed"
-  expect_log "Message from B"
-}
-
-function test_java_import_runtime_deps_java_sandwich() {
-  write_files_for_java_provider_in_attr "java_import" "runtime_deps"
-  write_java_custom_rule
-
-  bazel run java/com/google/sandwich:Main > $TEST_log || fail "Java sandwich build failed"
-  expect_log "Message from B"
-}
-
 function test_java_binary_deps_java_sandwich() {
   mkdir -p java/com/google/sandwich
   touch java/com/google/sandwich/{BUILD,{A,B,Main}.java,java_custom_library.bzl}
@@ -1582,12 +1566,12 @@ EOF
 function test_build_hello_world_with_remote_embedded_tool_targets() {
   write_hello_library_files
 
-  bazel build //java/main:main_deploy.jar --define EXECUTOR=remote \
-    &> $TEST_log || fail "build failed"
+  bazel build //java/main:main_deploy.jar &> $TEST_log || fail "build failed"
 }
 
 
 function test_target_exec_properties_java() {
+  add_platforms "MODULE.bazel"
   cat > Hello.java << 'EOF'
 public class Hello {
   public static void main(String[] args) {
@@ -1607,7 +1591,7 @@ java_binary(
 
 platform(
     name = "my_platform",
-    parents = ["@local_config_platform//:host"],
+    parents = ["@platforms//host"],
     exec_properties = {
         "key2": "value2",
         "overridden": "parent_value",
@@ -1648,18 +1632,17 @@ sh_test(
 EOF
 
   cat > "${pkg}"/run.sh <<EOF
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -eu
 
 JAVA=\$1
-[[ "\$JAVA" =~ ^(/|[^/]+$) ]] || JAVA="\$PWD/\$JAVA"
+[[ "\$JAVA" =~ ^(/|[^/]+$) ]] || JAVA="\$PWD/\${JAVA//external/..}"
 "\${JAVA}" -fullversion
 EOF
   chmod +x "${pkg}"/run.sh
 
   bazel test //"${pkg}":bar --test_output=all --verbose_failures >& "$TEST_log" \
-      --legacy_external_runfiles \
       || fail "Expected success"
 }
 
@@ -1757,7 +1740,7 @@ function test_jni() {
   expect_log "hello 123"
 }
 
-function test_jni_external_repo_legacy_external_runfiles() {
+function test_jni_external_repo_runfiles() {
   # Skip on MS Windows, see details in test_jni
   uname -s | grep -q MSYS_NT && return
   # Skip on Darwin, see details in test_jni
@@ -1765,22 +1748,7 @@ function test_jni_external_repo_legacy_external_runfiles() {
 
   setup_jni_targets "my_other_repo"
 
-  bazel run --legacy_external_runfiles //test:app >> $TEST_log || {
-    find bazel-bin/ | native # helpful for debugging
-    fail "bazel run command failed"
-  }
-  expect_log "hello 123"
-}
-
-function test_jni_external_repo_no_legacy_external_runfiles() {
-  # Skip on MS Windows, see details in test_jni
-  uname -s | grep -q MSYS_NT && return
-  # Skip on Darwin, see details in test_jni
-  uname -s | grep -q Darwin && return
-
-  setup_jni_targets "my_other_repo"
-
-  bazel run --nolegacy_external_runfiles //test:app >> $TEST_log || {
+  bazel run //test:app >> $TEST_log || {
     find bazel-bin/ | native # helpful for debugging
     fail "bazel run command failed"
   }

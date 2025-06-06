@@ -17,10 +17,12 @@ package com.google.devtools.build.lib.rules.cpp;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.devtools.build.lib.skyframe.BzlLoadValue.keyForBuild;
 
-import com.google.common.base.Ascii;
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Interner;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.docgen.annot.DocCategory;
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -31,36 +33,32 @@ import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.actions.PathMappers;
 import com.google.devtools.build.lib.analysis.actions.SymlinkAction;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
 import com.google.devtools.build.lib.analysis.starlark.Args;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkActionFactory;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkActionFactory.StarlarkActionContext;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.collect.nestedset.Depset;
-import com.google.devtools.build.lib.collect.nestedset.Depset.TypeException;
+import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
 import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
-import com.google.devtools.build.lib.packages.StarlarkInfo;
 import com.google.devtools.build.lib.packages.StarlarkProvider;
 import com.google.devtools.build.lib.packages.StructImpl;
-import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.packages.Types;
+import com.google.devtools.build.lib.rules.cpp.CcCommon.CoptsFilter;
 import com.google.devtools.build.lib.rules.cpp.CcLinkingContext.Linkstamp;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.LibraryToLinkValue;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.SequenceBuilder;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.VariableValue;
+import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.MapVariables;
 import com.google.devtools.build.lib.rules.cpp.CppLinkActionBuilder.LinkActionConstruction;
-import com.google.devtools.build.lib.rules.cpp.LibrariesToLinkCollector.CollectedLibrariesToLink;
-import com.google.devtools.build.lib.rules.cpp.Link.LinkTargetType;
-import com.google.devtools.build.lib.rules.cpp.Link.LinkingMode;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.starlarkbuildapi.FileApi;
 import com.google.devtools.build.lib.starlarkbuildapi.NativeComputedDefaultApi;
 import com.google.devtools.build.lib.starlarkbuildapi.core.ProviderApi;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 import javax.annotation.Nullable;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.ParamType;
@@ -74,6 +72,7 @@ import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkList;
 import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.eval.StarlarkValue;
+import net.starlark.java.eval.Tuple;
 import net.starlark.java.syntax.Location;
 
 /** Utility methods for rules in Starlark Builtins */
@@ -82,64 +81,16 @@ public class CcStarlarkInternal implements StarlarkValue {
 
   public static final String NAME = "cc_internal";
 
-  /**
-   * Wraps a dictionary of build variables into CcToolchainVariables.
-   *
-   * <p>TODO(b/338618120): This code helps during the transition of cc_common.link and
-   * cc_common.compile code to Starlark. Once that code is in Starlark, CcToolchainVariables rewrite
-   * may commence, most likely turning them into a regular Starlark dict (or a dict with parent if
-   * that optimisation is still needed).
-   */
+  /** Wraps a dictionary of build variables into CcToolchainVariables. */
   @StarlarkMethod(
       name = "cc_toolchain_variables",
       documented = false,
       parameters = {
         @Param(name = "vars", positional = false, named = true),
       })
-  @SuppressWarnings("unchecked")
   public CcToolchainVariables getCcToolchainVariables(Dict<?, ?> buildVariables)
-      throws TypeException {
-
-    CcToolchainVariables.Builder ccToolchainVariables = CcToolchainVariables.builder();
-    for (var entry : buildVariables.entrySet()) {
-      String key = (String) entry.getKey();
-      Object value = entry.getValue();
-      switch (value) {
-        case String s -> ccToolchainVariables.addStringVariable(key, s);
-        case Artifact a -> ccToolchainVariables.addArtifactVariable(key, a);
-        case Boolean b -> ccToolchainVariables.addBooleanValue(key, b);
-        case Iterable<?> values -> {
-          if (key.equals("libraries_to_link")) {
-            SequenceBuilder sb = new SequenceBuilder();
-            for (var v : (Iterable<VariableValue>) values) {
-              sb.addValue(v);
-            }
-            ccToolchainVariables.addCustomBuiltVariable(key, sb);
-          } else {
-            ccToolchainVariables.addStringSequenceVariable(key, (Iterable<String>) values);
-          }
-        }
-        case Depset depset -> {
-          Class<?> type = depset.getElementClass();
-          // Type doesn't matter for empty depsets.
-          if (type == String.class || type == null) {
-            ccToolchainVariables.addStringSequenceVariable(key, depset.getSet(String.class));
-          } else if (type == Artifact.class) {
-            ccToolchainVariables.addArtifactSequenceVariable(key, depset.getSet(Artifact.class));
-          } else if (type == PathFragment.class) {
-            ccToolchainVariables.addPathFragmentSequenceVariable(
-                key, depset.getSet(PathFragment.class));
-          } else {
-            throw new IllegalStateException("Unexpected depset element type: %s".formatted(type));
-          }
-        }
-        case NoneType ignored -> {}
-        default ->
-            throw new IllegalStateException(
-                "Unexpected value: %s (%s)".formatted(value, value.getClass()));
-      }
-    }
-    return ccToolchainVariables.build();
+      throws EvalException {
+    return new MapVariables(null, Dict.cast(buildVariables, String.class, Object.class, "vars"));
   }
 
   @StarlarkMethod(
@@ -178,6 +129,21 @@ public class CcStarlarkInternal implements StarlarkValue {
       boolean prefixConsumer) {
     return SolibSymlinkAction.getDynamicLibrarySymlink(
         actions.getRuleContext(), solibDirectory, library, preserveName, prefixConsumer);
+  }
+
+  @StarlarkMethod(
+      name = "dynamic_library_symlink2",
+      documented = false,
+      parameters = {
+        @Param(name = "actions"),
+        @Param(name = "library"),
+        @Param(name = "solib_directory"),
+        @Param(name = "path"),
+      })
+  public Artifact dynamicLibrarySymlinkAction2(
+      StarlarkActionFactory actions, Artifact library, String solibDirectory, String path) {
+    return SolibSymlinkAction.getDynamicLibrarySymlink(
+        actions.getRuleContext(), solibDirectory, library, PathFragment.create(path));
   }
 
   @StarlarkMethod(
@@ -346,6 +312,33 @@ public class CcStarlarkInternal implements StarlarkValue {
   @StarlarkMethod(name = "CcTestRunnerInfo", documented = false, structField = true)
   public StarlarkProvider ccTestRunnerInfo() throws EvalException {
     return starlarkCcTestRunnerInfo;
+  }
+
+  @StarlarkMethod(
+      name = "create_cpp_source",
+      doc = "Creates a CppSource instance.",
+      parameters = {
+        @Param(
+            name = "source",
+            positional = false,
+            named = true,
+            doc = "The source file.",
+            allowedTypes = {@ParamType(type = Artifact.class)}),
+        @Param(
+            name = "label",
+            positional = false,
+            named = true,
+            doc = "The label of the source file.",
+            allowedTypes = {@ParamType(type = Label.class)}),
+        @Param(
+            name = "type",
+            positional = false,
+            named = true,
+            doc = "The type of the source file.",
+            allowedTypes = {@ParamType(type = String.class)})
+      })
+  public CppSource createCppSource(Artifact source, Label label, String type) {
+    return CppSource.create(source, label, CppSource.Type.valueOf(type));
   }
 
   @StarlarkMethod(
@@ -520,113 +513,14 @@ public class CcStarlarkInternal implements StarlarkValue {
     ctx.getRuleContext().registerAction(action);
   }
 
-  @StarlarkMethod(
-      name = "for_static_library",
-      documented = false,
-      parameters = {@Param(name = "name"), @Param(name = "is_whole_archive", named = true)})
-  public LibraryToLinkValue forStaticLibrary(String name, boolean isWholeArchive) {
-    return LibraryToLinkValue.forStaticLibrary(name, isWholeArchive);
-  }
+  private static final Interner<Object> interner = BlazeInterners.newWeakInterner();
 
   @StarlarkMethod(
-      name = "for_object_file_group",
+      name = "intern_seq",
       documented = false,
-      parameters = {@Param(name = "files"), @Param(name = "is_whole_archive", named = true)})
-  public LibraryToLinkValue forObjectFileGroup(Sequence<?> files, boolean isWholeArchive)
-      throws EvalException {
-    return LibraryToLinkValue.forObjectFileGroup(
-        ImmutableList.copyOf(Sequence.cast(files, Artifact.class, "files")), isWholeArchive);
-  }
-
-  @StarlarkMethod(
-      name = "for_object_file",
-      documented = false,
-      parameters = {@Param(name = "name"), @Param(name = "is_whole_archive", named = true)})
-  public LibraryToLinkValue forObjectFile(String name, boolean isWholeArchive) {
-    return LibraryToLinkValue.forObjectFile(name, isWholeArchive);
-  }
-
-  @StarlarkMethod(
-      name = "for_interface_library",
-      documented = false,
-      parameters = {@Param(name = "name")})
-  public LibraryToLinkValue forInterfaceLibrary(String name) throws EvalException {
-    return LibraryToLinkValue.forInterfaceLibrary(name);
-  }
-
-  @StarlarkMethod(
-      name = "for_dynamic_library",
-      documented = false,
-      parameters = {@Param(name = "name")})
-  public LibraryToLinkValue forDynamicLibrary(String name) throws EvalException {
-    return LibraryToLinkValue.forDynamicLibrary(name);
-  }
-
-  @StarlarkMethod(
-      name = "for_versioned_dynamic_library",
-      documented = false,
-      parameters = {@Param(name = "name"), @Param(name = "path")})
-  public LibraryToLinkValue forVersionedDynamicLibrary(String name, String path)
-      throws EvalException {
-    return LibraryToLinkValue.forVersionedDynamicLibrary(name, path);
-  }
-
-  @StarlarkMethod(
-      name = "simple_linker_input",
-      documented = false,
-      parameters = {
-        @Param(name = "input"),
-        @Param(name = "artifact_category", defaultValue = "'object_file'"),
-        @Param(name = "disable_whole_archive", defaultValue = "False")
-      })
-  public LegacyLinkerInput simpleLinkerInput(
-      Artifact input, String artifactCategory, boolean disableWholeArchive) {
-    return LegacyLinkerInputs.simpleLinkerInput(
-        input,
-        ArtifactCategory.valueOf(Ascii.toUpperCase(artifactCategory)),
-        /* disableWholeArchive= */ disableWholeArchive,
-        input.getRootRelativePathString());
-  }
-
-  @StarlarkMethod(
-      name = "library_linker_input",
-      documented = false,
-      parameters = {
-        @Param(name = "input", named = true),
-        @Param(name = "artifact_category", named = true),
-        @Param(name = "library_identifier", named = true),
-        @Param(name = "object_files", named = true),
-        @Param(name = "lto_compilation_context", named = true),
-        @Param(name = "shared_non_lto_backends", defaultValue = "None", named = true),
-        @Param(name = "must_keep_debug", defaultValue = "False", named = true),
-        @Param(name = "disable_whole_archive", defaultValue = "False", named = true),
-      })
-  public LegacyLinkerInput libraryLinkerInput(
-      Artifact input,
-      String artifactCategory,
-      String libraryIdentifier,
-      Object objectFiles,
-      Object ltoCompilationContext,
-      Object sharedNonLtoBackends,
-      boolean mustKeepDebug,
-      boolean disableWholeArchive)
-      throws EvalException {
-    return LegacyLinkerInputs.newInputLibrary(
-        input,
-        ArtifactCategory.valueOf(artifactCategory),
-        libraryIdentifier,
-        objectFiles == Starlark.NONE
-            ? null
-            : Sequence.cast(objectFiles, Artifact.class, "object_files").getImmutableList(),
-        ltoCompilationContext instanceof LtoCompilationContext lto ? lto : null,
-        /* sharedNonLtoBackends= */ ImmutableMap.copyOf(
-            Dict.noneableCast(
-                sharedNonLtoBackends,
-                Artifact.class,
-                LtoBackendArtifacts.class,
-                "shared_non_lto_backends")),
-        mustKeepDebug,
-        disableWholeArchive);
+      parameters = {@Param(name = "seq")})
+  public Sequence<?> internList(Sequence<?> seq) {
+    return Tuple.copyOf(Iterables.transform(seq, interner::intern));
   }
 
   @StarlarkMethod(
@@ -665,111 +559,6 @@ public class CcStarlarkInternal implements StarlarkValue {
   }
 
   @StarlarkMethod(
-      name = "get_static_libraries",
-      documented = false,
-      parameters = {
-        @Param(name = "libraries_to_link"),
-        @Param(name = "prefer_static_libs"),
-      })
-  public StarlarkList<LibraryToLink> getStaticLibraries(
-      Sequence<?> librariesToLinkObj, boolean preferStaticLibs) throws EvalException {
-    ImmutableList.Builder<LibraryToLink> staticLibraries = ImmutableList.builder();
-    Sequence<LibraryToLink> librariesToLink =
-        Sequence.cast(librariesToLinkObj, LibraryToLink.class, "libraries_to_link");
-    for (LibraryToLink libraryToLink : librariesToLink) {
-      if (preferStaticLibs) {
-        if (libraryToLink.getStaticLibrary() != null
-            || libraryToLink.getPicStaticLibrary() != null) {
-          staticLibraries.add(libraryToLink);
-        }
-      } else {
-        if (libraryToLink.getInterfaceLibrary() == null
-            && libraryToLink.getDynamicLibrary() == null) {
-          staticLibraries.add(libraryToLink);
-        }
-      }
-    }
-    return StarlarkList.immutableCopyOf(staticLibraries.build());
-  }
-
-  @StarlarkMethod(
-      name = "collect_libraries_to_link",
-      documented = false,
-      useStarlarkThread = true,
-      parameters = {
-        @Param(name = "object_file_inputs"),
-        @Param(name = "linkstamp_object_file_inputs"),
-        @Param(name = "libraries_to_link"),
-        @Param(name = "cc_toolchain"),
-        @Param(name = "feature_configuration"),
-        @Param(name = "output"),
-        @Param(name = "dynamic_library_solib_symlink_output"),
-        @Param(name = "link_type"),
-        @Param(name = "linking_mode"),
-        @Param(name = "is_native_deps"),
-        @Param(name = "need_whole_archive"),
-        @Param(name = "solib_dir"),
-        @Param(name = "toolchain_libraries_solib_dir"),
-        @Param(name = "allow_lto_indexing"),
-        @Param(name = "lto_mapping"),
-        @Param(name = "workspace_name"),
-      })
-  public StructImpl collectLibrariesToLink(
-      Sequence<?> objectFileInputs,
-      Sequence<?> linkstampObjectFileInputs,
-      Sequence<?> librariesToLink,
-      StarlarkInfo ccToolchain,
-      FeatureConfigurationForStarlark featureConfiguration,
-      Artifact output,
-      Object dynamicLibrarySolibSymlinkOutput,
-      StructImpl linkType,
-      String linkingMode,
-      boolean isNativeDeps,
-      boolean needWholeArchive,
-      String solibDir,
-      String toolchainLibrariesSolibDir,
-      boolean allowLtoIndexing,
-      Dict<?, ?> ltoMapping,
-      String workspaceName,
-      StarlarkThread thread)
-      throws EvalException {
-    LibrariesToLinkCollector librariesToLinkCollector =
-        new LibrariesToLinkCollector(
-            isNativeDeps,
-            CcToolchainProvider.create(ccToolchain),
-            PathFragment.create(toolchainLibrariesSolibDir),
-            LinkTargetType.valueOf(linkType.getValue("_name", String.class)),
-            LinkingMode.valueOf(Ascii.toUpperCase(linkingMode)),
-            output,
-            PathFragment.create(solibDir),
-            Dict.cast(ltoMapping, Artifact.class, Artifact.class, "lto_mapping"),
-            featureConfiguration.getFeatureConfiguration(),
-            allowLtoIndexing,
-            Sequence.cast(objectFileInputs, Artifact.class, "object_file_inputs"),
-            Sequence.cast(
-                linkstampObjectFileInputs, Artifact.class, "linkstamp_object_file_inputs"),
-            Sequence.cast(librariesToLink, LibraryToLink.class, "librariesToLink"),
-            needWholeArchive,
-            workspaceName,
-            dynamicLibrarySolibSymlinkOutput == Starlark.NONE
-                ? null
-                : (Artifact) dynamicLibrarySolibSymlinkOutput);
-    CollectedLibrariesToLink libs = librariesToLinkCollector.collectLibrariesToLink();
-    return StructProvider.STRUCT.createStruct(
-        Dict.immutableCopyOf(
-            ImmutableMap.of(
-                "libraries_to_link",
-                    StarlarkList.immutableCopyOf(libs.getLibrariesToLinkValues().getValues()),
-                "expanded_linker_inputs",
-                    StarlarkList.immutableCopyOf(libs.getExpandedLinkerInputs().toList()),
-                "library_search_directories",
-                    Depset.of(String.class, libs.getLibrarySearchDirectories()),
-                "all_runtime_library_search_directories",
-                    Depset.of(String.class, libs.getRuntimeLibrarySearchDirectories()))),
-        thread);
-  }
-
-  @StarlarkMethod(
       name = "create_library_to_link",
       documented = false,
       parameters = {@Param(name = "library_to_link")})
@@ -793,6 +582,8 @@ public class CcStarlarkInternal implements StarlarkValue {
       if (value != null && value != Starlark.NONE) {
         builder.setObjectFiles(
             Sequence.cast(value, Artifact.class, "object_files").getImmutableList());
+      } else {
+        builder.setObjectFiles(null);
       }
     }
     if (libraryToLink.getFieldNames().contains("pic_object_files")) {
@@ -800,13 +591,15 @@ public class CcStarlarkInternal implements StarlarkValue {
       if (value != null && value != Starlark.NONE) {
         builder.setPicObjectFiles(
             Sequence.cast(value, Artifact.class, "pic_object_files").getImmutableList());
+      } else {
+        builder.setPicObjectFiles(null);
       }
     }
     builder.setLtoCompilationContext(
         libraryToLink.getNoneableValue("lto_compilation_context", LtoCompilationContext.class));
     builder.setPicLtoCompilationContext(
         libraryToLink.getNoneableValue("pic_lto_compilation_context", LtoCompilationContext.class));
-    if (libraryToLink.getFieldNames().contains("shared_non_lto_backends")) {
+    if (libraryToLink.getNoneableValue("shared_non_lto_backends", Dict.class) != null) {
       builder.setSharedNonLtoBackends(
           ImmutableMap.copyOf(
               Dict.noneableCast(
@@ -815,7 +608,7 @@ public class CcStarlarkInternal implements StarlarkValue {
                   LtoBackendArtifacts.class,
                   "shared_non_lto_backends")));
     }
-    if (libraryToLink.getFieldNames().contains("pic_shared_non_lto_backends")) {
+    if (libraryToLink.getNoneableValue("pic_shared_non_lto_backends", Dict.class) != null) {
       builder.setPicSharedNonLtoBackends(
           ImmutableMap.copyOf(
               Dict.noneableCast(
@@ -834,86 +627,10 @@ public class CcStarlarkInternal implements StarlarkValue {
     if (libraryToLink.getFieldNames().contains("must_keep_debug")) {
       builder.setMustKeepDebug(libraryToLink.getValue("must_keep_debug", Boolean.class));
     }
+    if (libraryToLink.getFieldNames().contains("contains_objects")) {
+      builder.setContainsObjects(libraryToLink.getValue("contains_objects", Boolean.class));
+    }
     return builder.build();
-  }
-
-  // TODO(b/331164666): rewrite to Stalark using cc_common.create_lto_artifact
-  @StarlarkMethod(
-      name = "create_lto_artifacts",
-      documented = false,
-      parameters = {
-        @Param(name = "actions"),
-        @Param(name = "lto_compilation_context"),
-        @Param(name = "feature_configuration"),
-        @Param(name = "cc_toolchain"),
-        @Param(name = "use_pic"),
-        @Param(name = "object_files"),
-        @Param(name = "lto_output_root_prefix"),
-        @Param(name = "lto_obj_root_prefix"),
-        @Param(name = "static_libraries_to_link"),
-        @Param(name = "allow_lto_indexing"),
-        @Param(name = "include_link_static_in_lto_indexing"),
-        @Param(name = "prefer_pic_libs"),
-      })
-  public Iterable<LtoBackendArtifacts> createLtoArtifacts(
-      WrappedStarlarkActionFactory actions,
-      LtoCompilationContext ltoCompilationContext,
-      FeatureConfigurationForStarlark featureConfiguration,
-      StarlarkInfo toolchain,
-      boolean usePicForLtoBackendActions,
-      Sequence<?> objectFiles,
-      String ltoOutputRootPrefix,
-      String ltoObjRootPrefix,
-      Sequence<?> staticLibrariesToLink,
-      boolean allowLtoIndexing,
-      boolean includeLinkStaticInLtoIndexing,
-      boolean preferPicLibs)
-      throws EvalException {
-    return CppLinkActionBuilder.createLtoArtifacts(
-        actions.construction,
-        ltoCompilationContext,
-        featureConfiguration.getFeatureConfiguration(),
-        CcToolchainProvider.create(toolchain),
-        usePicForLtoBackendActions,
-        Sequence.cast(objectFiles, Artifact.class, "object_files").getImmutableList(),
-        PathFragment.create(ltoOutputRootPrefix),
-        PathFragment.create(ltoObjRootPrefix),
-        Sequence.cast(staticLibrariesToLink, LibraryToLink.class, "static_libraries_to_link"),
-        allowLtoIndexing,
-        includeLinkStaticInLtoIndexing,
-        preferPicLibs);
-  }
-
-  // TODO(b/331164666): rewrite to Stalark using cc_common.create_lto_artifact
-  @StarlarkMethod(
-      name = "create_shared_non_lto_artifacts",
-      documented = false,
-      parameters = {
-        @Param(name = "actions"),
-        @Param(name = "lto_compilation_context"),
-        @Param(name = "is_linker"),
-        @Param(name = "feature_configuration"),
-        @Param(name = "cc_toolchain"),
-        @Param(name = "use_pic"),
-        @Param(name = "object_files"),
-      })
-  public ImmutableMap<Artifact, LtoBackendArtifacts> createSharedNonLtoArtifacts(
-      WrappedStarlarkActionFactory actions,
-      LtoCompilationContext ltoCompilationContext,
-      boolean isLinker,
-      FeatureConfigurationForStarlark featureConfiguration,
-      StarlarkInfo toolchain,
-      boolean usePicForLtoBackendActions,
-      Sequence<?> objectFiles)
-      throws EvalException {
-    return CppLinkActionBuilder.createSharedNonLtoArtifacts(
-        actions.construction,
-        ltoCompilationContext,
-        isLinker,
-        featureConfiguration.getFeatureConfiguration(),
-        CcToolchainProvider.create(toolchain),
-        usePicForLtoBackendActions,
-        Sequence.cast(objectFiles, Artifact.class, "object_files").getImmutableList());
   }
 
   @StarlarkMethod(name = "empty_compilation_outputs", documented = false)
@@ -921,8 +638,8 @@ public class CcStarlarkInternal implements StarlarkValue {
     return CcCompilationOutputs.EMPTY;
   }
 
-  private static class WrappedStarlarkActionFactory extends StarlarkActionFactory {
-    private final LinkActionConstruction construction;
+  static class WrappedStarlarkActionFactory extends StarlarkActionFactory {
+    final LinkActionConstruction construction;
 
     public WrappedStarlarkActionFactory(
         StarlarkActionFactory parent, LinkActionConstruction construction) {
@@ -963,7 +680,7 @@ public class CcStarlarkInternal implements StarlarkValue {
       parameters = {
         @Param(name = "actions"),
       })
-  public StarlarkRuleContext getLabel(StarlarkActionFactory actions) {
+  public StarlarkRuleContext getStarlarkRuleContext(StarlarkActionFactory actions) {
     return actions.getRuleContext().getStarlarkRuleContext();
   }
 
@@ -980,5 +697,97 @@ public class CcStarlarkInternal implements StarlarkValue {
         .getRuleContext()
         .getRule()
         .getTargetKind();
+  }
+
+  @StarlarkMethod(
+      name = "collect_per_file_lto_backend_opts",
+      documented = false,
+      parameters = {@Param(name = "cpp_config"), @Param(name = "obj")})
+  public ImmutableList<String> collectPerFileLtoBackendOpts(
+      CppConfiguration cppConfiguration, Artifact objectFile) {
+    return cppConfiguration.getPerFileLtoBackendOpts().stream()
+        .filter(perLabelOptions -> perLabelOptions.isIncluded(objectFile))
+        .map(PerLabelOptions::getOptions)
+        .flatMap(options -> options.stream())
+        .collect(toImmutableList());
+  }
+
+  /**
+   * Returns a {@code CcCompilationContext} that is based on a given {@code CcCompilationContext},
+   * with {@code extraHeaderTokens} added to the header tokens.
+   */
+  @StarlarkMethod(
+      name = "create_cc_compilation_context_with_extra_header_tokens",
+      doc =
+          "Creates a <code>CompilationContext</code> based on an existing one, with extra header"
+              + " tokens.",
+      parameters = {
+        @Param(
+            name = "cc_compilation_context",
+            doc = "The base <code>CompilationContext</code>.",
+            positional = false,
+            named = true),
+        @Param(
+            name = "extra_header_tokens",
+            doc = "The extra header tokens to add.",
+            positional = false,
+            named = true),
+      })
+  public CcCompilationContext createCcCompilationContextWithExtraHeaderTokens(
+      CcCompilationContext ccCompilationContext, Sequence<?> extraHeaderTokens)
+      throws EvalException {
+    return CcCompilationContext.createWithExtraHeaderTokens(
+        ccCompilationContext,
+        Sequence.cast(extraHeaderTokens, Artifact.class, "extra_header_tokens").getImmutableList());
+  }
+
+  @StarlarkMethod(
+      name = "create_copts_filter",
+      doc = "Creates a copts filter from a regex.",
+      documented = false,
+      parameters = {
+        @Param(
+            name = "copts_filter",
+            doc =
+                "The regex to use for the copts filter. If not given, a filter that always passes"
+                    + " is returned.",
+            allowedTypes = {@ParamType(type = String.class), @ParamType(type = NoneType.class)},
+            positional = true,
+            named = true,
+            defaultValue = "unbound"),
+      })
+  public StarlarkValue createCoptsFilterForStarlark(Object coptsFilterObject) throws EvalException {
+    return createCoptsFilter(coptsFilterObject);
+  }
+
+  private CoptsFilter createCoptsFilter(Object coptsFilterObject) throws EvalException {
+    String coptsFilterRegex =
+        (Starlark.isNullOrNone(coptsFilterObject) || coptsFilterObject == Starlark.UNBOUND)
+            ? null
+            : (String) coptsFilterObject;
+    CoptsFilter coptsFilter = null;
+    if (Strings.isNullOrEmpty(coptsFilterRegex)) {
+      coptsFilter = CoptsFilter.alwaysPasses();
+    } else {
+      try {
+        coptsFilter = CoptsFilter.fromRegex(Pattern.compile(coptsFilterRegex));
+      } catch (PatternSyntaxException e) {
+        throw Starlark.errorf(
+            "invalid regular expression '%s': %s", coptsFilterRegex, e.getMessage());
+      }
+    }
+    return coptsFilter;
+  }
+
+  @StarlarkMethod(
+      name = "is_tree_artifact",
+      documented = false,
+      parameters = {
+        @Param(
+            name = "artifact",
+            allowedTypes = {@ParamType(type = Artifact.class)})
+      })
+  public boolean isTreeArtifact(Artifact artifact) {
+    return artifact.isTreeArtifact();
   }
 }

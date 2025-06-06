@@ -62,7 +62,6 @@ java_library(
         ":optioninfo",
         ":options_diff",
         ":run_under",
-        ":starlark_defined_config_transition",
         "//src/main/java/com/google/devtools/build/lib/actions:action_environment",
         "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
         "//src/main/java/com/google/devtools/build/lib/actions:build_configuration_event",
@@ -161,13 +160,12 @@ java_library(
     name = "config_matching_provider",
     srcs = ["ConfigMatchingProvider.java"],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib/analysis:required_config_fragments_provider",
         "//src/main/java/com/google/devtools/build/lib/analysis:transitive_info_provider",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization/autocodec",
         "//third_party:auto_value",
         "//third_party:guava",
-        "//third_party:jsr305",
     ],
 )
 
@@ -248,6 +246,7 @@ java_library(
     name = "execution_info_modifier",
     srcs = ["ExecutionInfoModifier.java"],
     deps = [
+        "//src/main/java/com/google/devtools/build/lib/util:string_encoding",
         "//src/main/java/com/google/devtools/common/options",
         "//third_party:auto_value",
         "//third_party:guava",

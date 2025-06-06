@@ -20,6 +20,7 @@ filegroup(
         "//third_party/java/jcommander:srcs",
         "//third_party/java/proguard:srcs",
         "//third_party/pprof:srcs",
+        "//third_party/proguard:srcs",
         "//third_party/protobuf:srcs",
         "//third_party/py/abseil:srcs",
         "//third_party/py/concurrent:srcs",
@@ -672,4 +673,17 @@ filegroup(
         "@maven//:junit_junit_file",
         "@maven//:org_hamcrest_hamcrest_core_file",
     ],
+)
+
+java_library(
+    name = "jmh",
+    exported_plugins = [":jmh_benchmark_processor"],
+    exports = ["@maven//:org_openjdk_jmh_jmh_core"],
+)
+
+java_plugin(
+    name = "jmh_benchmark_processor",
+    processor_class = "org.openjdk.jmh.generators.BenchmarkProcessor",
+    visibility = ["//visibility:private"],
+    deps = ["@maven//:org_openjdk_jmh_jmh_generator_annprocess"],
 )
