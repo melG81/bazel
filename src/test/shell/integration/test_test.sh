@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright 2017 The Bazel Authors. All rights reserved.
 #
@@ -266,7 +266,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 sh_test(name = "x", srcs = ["x.sh"])
 EOF
   cat > "$pkg/x.sh" <<'eof'
-#!/bin/bash
+#!/usr/bin/env bash
 read -n5 FOO
 echo "foo=($FOO)"
 eof
@@ -475,6 +475,59 @@ EOF
   expect_log "ENV_C=no_surprise"
   expect_not_log "ENV_D=surprise"
   expect_log "ENV_DATA=${pkg}/t.dat"
+}
+
+function run_test_executable_in_symlinks_only() {
+  add_platforms "MODULE.bazel"
+  local -r pkg=$FUNCNAME
+  mkdir -p $pkg || fail "mkdir -p $pkg failed"
+  cat > $pkg/BUILD <<'EOF'
+load(":defs.bzl", "my_test")
+
+my_test(
+  name = "t",
+)
+EOF
+  cat > $pkg/defs.bzl <<EOF
+def _my_test_impl(ctx):
+    if ctx.target_platform_has_constraint(ctx.attr._windows_constraint[platform_common.ConstraintValueInfo]):
+        bin = ctx.actions.declare_file("bin.bat")
+        ctx.actions.write(bin, "@REM hi", is_executable = True)
+    else:
+        bin = ctx.actions.declare_file("bin.sh")
+        ctx.actions.write(bin, "", is_executable = True)
+    return [
+        DefaultInfo(
+            executable = bin,
+            $1 = ctx.runfiles(
+                symlinks = {
+                    "custom_path": bin,
+                },
+            ),
+        ),
+    ]
+
+my_test = rule(
+    implementation = _my_test_impl,
+    test = True,
+    attrs = {
+        "_windows_constraint": attr.label(
+            default = "@platforms//os:windows",
+        ),
+    },
+)
+EOF
+
+  bazel test --test_output=streamed //$pkg:t &> $TEST_log \
+      || fail "expected test to pass"
+}
+
+function test_executable_in_symlinks_only_stateful_runfiles() {
+  run_test_executable_in_symlinks_only "default_runfiles"
+}
+
+function test_executable_in_symlinks_only_stateless_runfiles() {
+  run_test_executable_in_symlinks_only "runfiles"
 }
 
 run_suite "test tests"
