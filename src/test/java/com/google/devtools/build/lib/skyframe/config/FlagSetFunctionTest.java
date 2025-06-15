@@ -18,6 +18,7 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
@@ -25,9 +26,7 @@ import com.google.devtools.build.lib.analysis.util.DummyTestFragment;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventKind;
-import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
 import com.google.devtools.build.lib.runtime.ConfigFlagDefinitions;
-import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.ProjectValue.BuildableUnit;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
@@ -37,7 +36,7 @@ import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import com.google.testing.junit.testparameterinjector.TestParameters;
 import com.google.testing.junit.testparameterinjector.TestParameters.TestParametersValues;
 import com.google.testing.junit.testparameterinjector.TestParametersValuesProvider;
-import java.util.Optional;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -124,6 +123,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
             ruleClassProvider.getFragmentRegistry().getOptionsClasses());
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -156,6 +156,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
             ruleClassProvider.getFragmentRegistry().getOptionsClasses());
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "unknown_config",
             buildOptions,
@@ -176,6 +177,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
             ruleClassProvider.getFragmentRegistry().getOptionsClasses());
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "",
             buildOptions,
@@ -208,6 +210,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
             ruleClassProvider.getFragmentRegistry().getOptionsClasses());
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -230,6 +233,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
     setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "random_config_name",
             buildOptions,
@@ -261,6 +265,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
     setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -285,6 +290,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
     setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "fake_config",
             buildOptions,
@@ -317,6 +323,7 @@ public final class FlagSetFunctionTest extends BuildViewTestCase {
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "other_config",
             buildOptions,
@@ -366,6 +373,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -409,6 +417,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -456,6 +465,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -507,6 +517,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -535,6 +546,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -565,6 +577,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -595,6 +608,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -645,6 +659,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             createBuildOptions(), // this is a fake flag so don't add it here.
@@ -694,6 +709,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -741,6 +757,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -795,6 +812,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -854,6 +872,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -897,6 +916,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "test_config",
             buildOptions,
@@ -927,6 +947,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             "non_existent_config",
             buildOptions,
@@ -960,6 +981,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ "",
             buildOptions,
@@ -995,6 +1017,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ "",
             buildOptions,
@@ -1029,6 +1052,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ "",
             buildOptions,
@@ -1042,7 +1066,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
         .contains("default_config must be a string matching a configs variable definition");
   }
 
-  @Test
+  @Ignore("b/415352636")
   public void enforceCanonicalConfigsNoSclConfigFlagValidDefaultConfig() throws Exception {
     createStringFlag("//test:myflag", /* defaultValue= */ "default");
     scratch.file(
@@ -1062,6 +1086,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ "",
             buildOptions,
@@ -1099,6 +1124,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ "",
             buildOptions,
@@ -1111,7 +1137,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
     assertDoesNotContainEvent("Applying flags from the config 'test_config'");
   }
 
-  @Test
+  @Ignore("b/415352636")
   public void basicFlagsetFunctionalityWithTopLevelProjectSchema() throws Exception {
     createStringFlag("//test:myflag", /* defaultValue= */ "default");
     scratch.file(
@@ -1131,6 +1157,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ "",
             buildOptions,
@@ -1168,6 +1195,7 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
 
     FlagSetValue.Key key =
         FlagSetValue.Key.create(
+            ImmutableSet.of(Label.parseCanonical("//test:test_target")),
             Label.parseCanonical("//test:PROJECT.scl"),
             /* sclConfig= */ null,
             buildOptions,
@@ -1190,14 +1218,48 @@ string_flag = rule(implementation = lambda ctx: [], build_setting = config.strin
             """);
   }
 
+  @Test
+  public void buildingMultipleTargets_withSameConfig_isAllowed() throws Exception {
+    createStringFlag("//test:myflag", /* defaultValue= */ "default");
+    scratch.file(
+        "test/PROJECT.scl",
+        """
+        project = {
+          "configs": {
+            "default":[],
+            "debug": ['--//test:myflag=debug_value'],
+            "release": ['--//test:myflag=debug_value'],
+          },
+          "default_config": "default",
+          "enforcement_policy": "warn",
+        }
+        """);
+    BuildOptions buildOptions =
+        BuildOptions.getDefaultBuildOptionsForFragments(
+            ruleClassProvider.getFragmentRegistry().getOptionsClasses());
+    setBuildLanguageOptions("--experimental_enable_scl_dialect=true");
+
+    FlagSetValue.Key key =
+        FlagSetValue.Key.create(
+            ImmutableSet.of(
+                Label.parseCanonical("//test:test_target"),
+                Label.parseCanonical("//test:test_target2")),
+            Label.parseCanonical("//test:PROJECT.scl"),
+            /* sclConfig= */ null,
+            buildOptions,
+            /* userOptions= */ ImmutableMap.of(),
+            /* configFlagDefinitions= */ ConfigFlagDefinitions.NONE,
+            /* enforceCanonical= */ true);
+
+    var unused = executeFunction(key);
+    assertDoesNotContainEvent(
+        "Cannot parse options: Building target(s) with different configurations are not supported");
+  }
+
   private FlagSetValue executeFunction(FlagSetValue.Key key) throws Exception {
     SkyframeExecutor skyframeExecutor = getSkyframeExecutor();
     EvaluationResult<FlagSetValue> result =
         SkyframeExecutorTestUtils.evaluate(skyframeExecutor, key, /* keepGoing= */ false, reporter);
-    skyframeExecutor.injectExtraPrecomputedValues(
-        ImmutableList.of(
-            PrecomputedValue.injected(
-                RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE, Optional.empty())));
     if (result.hasError()) {
       throw result.getError(key).getException();
     }

@@ -19,11 +19,11 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.actions.ExecException;
-import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.events.Event;
@@ -181,25 +181,22 @@ public final class SandboxModule extends BlazeModule {
    * @return true if windows-sandbox can and should be used; false otherwise
    * @throws IOException if there are problems trying to determine the status of windows-sandbox
    */
-  private static boolean shouldUseWindowsSandbox(TriState requested, PathFragment binary)
+  private static boolean shouldUseWindowsSandbox(
+      TriState requested, PathFragment binary, ImmutableMap<String, String> clientEnv)
       throws IOException {
-    switch (requested) {
-      case AUTO:
-        return WindowsSandboxUtil.isAvailable(binary);
-
-      case NO:
-        return false;
-
-      case YES:
-        if (!WindowsSandboxUtil.isAvailable(binary)) {
+    return switch (requested) {
+      case AUTO -> WindowsSandboxUtil.isAvailable(binary, clientEnv);
+      case NO -> false;
+      case YES -> {
+        if (!WindowsSandboxUtil.isAvailable(binary, clientEnv)) {
           throw new IOException(
               "windows-sandbox explicitly requested but \""
                   + binary
                   + "\" could not be found or is not valid");
         }
-        return true;
-    }
-    throw new IllegalStateException("Not reachable");
+        yield true;
+      }
+    };
   }
 
   private void setup(CommandEnvironment cmdEnv, SpawnStrategyRegistry.Builder builder)
@@ -279,7 +276,8 @@ public final class SandboxModule extends BlazeModule {
     boolean windowsSandboxSupported;
     try (SilentCloseable c = Profiler.instance().profile("shouldUseWindowsSandbox")) {
       windowsSandboxSupported =
-          shouldUseWindowsSandbox(options.useWindowsSandbox, windowsSandboxPath);
+          shouldUseWindowsSandbox(
+              options.useWindowsSandbox, windowsSandboxPath, cmdEnv.getClientEnv());
     }
 
     Duration timeoutKillDelay =
@@ -464,7 +462,7 @@ public final class SandboxModule extends BlazeModule {
 
     @Override
     public SpawnResult exec(Spawn spawn, SpawnExecutionContext context)
-        throws InterruptedException, IOException, ExecException, ForbiddenActionInputException {
+        throws InterruptedException, IOException, ExecException {
       if (sandboxSpawnRunner.canExec(spawn)) {
         return sandboxSpawnRunner.exec(spawn, context);
       } else {

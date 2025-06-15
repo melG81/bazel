@@ -178,6 +178,12 @@ public abstract class RepositoryFunction {
       Rule rule, Path outputDirectory, BlazeDirectories directories, Environment env, SkyKey key)
       throws InterruptedException, RepositoryFunctionException;
 
+  /** Whether the fetched repo contents are reproducible, hence cacheable. */
+  public enum Reproducibility {
+    YES,
+    NO
+  }
+
   /**
    * The result of the {@link #fetch} method.
    *
@@ -186,29 +192,10 @@ public abstract class RepositoryFunction {
    *     The {@link #isAnyRecordedInputOutdated} method is responsible for checking the value added
    *     to that map when checking the content of a marker file. Not an ImmutableMap, because
    *     regrettably the values can be null sometimes.
+   * @param reproducible Whether the fetched repo contents are reproducible, hence cacheable.
    */
-  public record FetchResult(Map<? extends RepoRecordedInput, String> recordedInputValues) {}
-
-  protected static void ensureNativeRepoRuleEnabled(Rule rule, Environment env, String replacement)
-      throws RepositoryFunctionException, InterruptedException {
-    if (!isWorkspaceRepo(rule)) {
-      // If this native repo rule is used in a Bzlmod context, always allow it. This is because
-      // we're still using the native repo rule `local_config_platform` for the builtin module with
-      // the same name. We should just get rid of that.
-      return;
-    }
-    if (!RepositoryDelegatorFunction.DISABLE_NATIVE_REPO_RULES.get(env)) {
-      return;
-    }
-    throw new RepositoryFunctionException(
-        Starlark.errorf(
-            "Native repo rule %s is disabled since the flag "
-                + "--incompatible_disable_native_repo_rules is set. Native repo rules are "
-                + "deprecated; please migrate to their Starlark counterparts. For %s, please use "
-                + "%s.",
-            rule.getRuleClass(), rule.getRuleClass(), replacement),
-        Transience.PERSISTENT);
-  }
+  public record FetchResult(
+      Map<? extends RepoRecordedInput, String> recordedInputValues, Reproducibility reproducible) {}
 
   /**
    * Verify the data provided by the marker file to check if a refetch is needed. Returns an empty

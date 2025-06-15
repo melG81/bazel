@@ -25,43 +25,30 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
-import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.actions.ActionConstructionContext;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
-import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.rules.cpp.CcCommon.CoptsFilter;
 import com.google.devtools.build.lib.rules.cpp.CcCommon.Language;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.VariablesExtension;
-import com.google.devtools.build.lib.starlarkbuildapi.cpp.CompilationInfoApi;
-import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
-import net.starlark.java.eval.Sequence;
-import net.starlark.java.eval.Starlark;
-import net.starlark.java.eval.StarlarkFunction;
-import net.starlark.java.eval.StarlarkList;
-import net.starlark.java.eval.Tuple;
 
 /**
  * A class to create C/C++ compile actions in a way that is consistent with cc_library. Rules that
@@ -73,784 +60,85 @@ import net.starlark.java.eval.Tuple;
  * these require explicit calls to the corresponding setter methods.
  */
 public final class CcStaticCompilationHelper {
-  /**
-   * Configures a compile action builder by setting up command line options and auxiliary inputs
-   * according to the FDO configuration. This method does nothing If FDO is disabled.
-   */
-  private static void configureFdoBuildVariables(
-      CcToolchainProvider ccToolchain,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      Map<String, String> variablesBuilder,
-      String fdoInstrument,
-      String csFdoInstrument)
-      throws EvalException {
-    if (featureConfiguration.isEnabled(CppRuleClasses.FDO_INSTRUMENT)) {
-      variablesBuilder.put(
-          CompileBuildVariables.FDO_INSTRUMENT_PATH.getVariableName(), fdoInstrument);
-    }
-    if (featureConfiguration.isEnabled(CppRuleClasses.CS_FDO_INSTRUMENT)) {
-      variablesBuilder.put(
-          CompileBuildVariables.CS_FDO_INSTRUMENT_PATH.getVariableName(), csFdoInstrument);
-    }
 
-    // FDO is disabled -> do nothing.
-    Preconditions.checkNotNull(fdoContext);
-    if (!fdoContext.hasArtifacts()) {
-      return;
-    }
+  private CcStaticCompilationHelper() {}
 
-    if (fdoContext.getPrefetchHintsArtifact() != null) {
-      variablesBuilder.put(
-          CompileBuildVariables.FDO_PREFETCH_HINTS_PATH.getVariableName(),
-          fdoContext.getPrefetchHintsArtifact().getExecPathString());
-    }
-
-    if (shouldPassPropellerProfiles(ccToolchain, fdoContext, featureConfiguration)) {
-      if (fdoContext.getPropellerOptimizeInputFile().getCcArtifact() != null) {
-        variablesBuilder.put(
-            CompileBuildVariables.PROPELLER_OPTIMIZE_CC_PATH.getVariableName(),
-            fdoContext.getPropellerOptimizeInputFile().getCcArtifact().getExecPathString());
-      }
-
-      if (fdoContext.getPropellerOptimizeInputFile().getLdArtifact() != null) {
-        variablesBuilder.put(
-            CompileBuildVariables.PROPELLER_OPTIMIZE_LD_PATH.getVariableName(),
-            fdoContext.getPropellerOptimizeInputFile().getLdArtifact().getExecPathString());
-      }
-    }
-
-    if (fdoContext.getMemProfProfileArtifact() != null) {
-      variablesBuilder.put(
-          CompileBuildVariables.MEMPROF_PROFILE_PATH.getVariableName(),
-          fdoContext.getMemProfProfileArtifact().getExecPathString());
-    }
-
-    FdoContext.BranchFdoProfile branchFdoProfile = fdoContext.getBranchFdoProfile();
-    // Optimization phase
-    if (branchFdoProfile != null) {
-      if (!getAuxiliaryFdoInputs(ccToolchain, fdoContext, featureConfiguration).isEmpty()) {
-        if (featureConfiguration.isEnabled(CppRuleClasses.AUTOFDO)
-            || featureConfiguration.isEnabled(CppRuleClasses.XBINARYFDO)) {
-          variablesBuilder.put(
-              CompileBuildVariables.FDO_PROFILE_PATH.getVariableName(),
-              branchFdoProfile.getProfileArtifact().getExecPathString());
-        }
-        if (featureConfiguration.isEnabled(CppRuleClasses.FDO_OPTIMIZE)) {
-          if (branchFdoProfile.isLlvmFdo() || branchFdoProfile.isLlvmCSFdo()) {
-            variablesBuilder.put(
-                CompileBuildVariables.FDO_PROFILE_PATH.getVariableName(),
-                branchFdoProfile.getProfileArtifact().getExecPathString());
-          }
-        }
-      }
-    }
-  }
-
-  /** Returns whether Propeller profiles should be passed to a compile action. */
-  private static boolean shouldPassPropellerProfiles(
-      CcToolchainProvider ccToolchain,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration)
-      throws EvalException {
-    if (ccToolchain.isToolConfiguration()) {
-      // Propeller doesn't make much sense for host builds.
-      return false;
-    }
-
-    if (fdoContext.getPropellerOptimizeInputFile() == null) {
-      // No Propeller profiles to pass.
-      return false;
-    }
-    // Don't pass Propeller input files if they have no effect (i.e. for ThinLTO).
-    return !featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO)
-        || featureConfiguration.isEnabled(
-            CppRuleClasses.PROPELLER_OPTIMIZE_THINLTO_COMPILE_ACTIONS);
-  }
-
-  /** Returns the auxiliary files that need to be added to the {@link CppCompileAction}. */
-  private static NestedSet<Artifact> getAuxiliaryFdoInputs(
-      CcToolchainProvider ccToolchain,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration)
-      throws EvalException {
-    NestedSetBuilder<Artifact> auxiliaryInputs = NestedSetBuilder.stableOrder();
-
-    if (fdoContext.getPrefetchHintsArtifact() != null) {
-      auxiliaryInputs.add(fdoContext.getPrefetchHintsArtifact());
-    }
-    if (shouldPassPropellerProfiles(ccToolchain, fdoContext, featureConfiguration)) {
-      if (fdoContext.getPropellerOptimizeInputFile().getCcArtifact() != null) {
-        auxiliaryInputs.add(fdoContext.getPropellerOptimizeInputFile().getCcArtifact());
-      }
-      if (fdoContext.getPropellerOptimizeInputFile().getLdArtifact() != null) {
-        auxiliaryInputs.add(fdoContext.getPropellerOptimizeInputFile().getLdArtifact());
-      }
-    }
-    if (fdoContext.getMemProfProfileArtifact() != null) {
-      auxiliaryInputs.add(fdoContext.getMemProfProfileArtifact());
-    }
-    FdoContext.BranchFdoProfile branchFdoProfile = fdoContext.getBranchFdoProfile();
-    // If --fdo_optimize was not specified, we don't have any additional inputs.
-    if (branchFdoProfile != null) {
-      auxiliaryInputs.add(branchFdoProfile.getProfileArtifact());
-    }
-
-    return auxiliaryInputs.build();
-  }
+  // Main entry point
 
   /**
-   * A group of source file types and action names for builds controlled by CcCompilationHelper.
-   * Determines what file types CcCompilationHelper considers sources and what action configs are
-   * configured in the CROSSTOOL.
+   * Constructs the C++ compiler actions. It generally creates one action for every specified source
+   * file. It takes into account coverage, and PIC, in addition to using the settings specified on
+   * the current object. This method should only be called once.
+   *
+   * <p>This is the main entry point for the class, exported as create_cc_compile_actions() to
+   * Starlark.
    */
-  enum SourceCategory {
-    CC(
-        FileTypeSet.of(
-            CppFileTypes.CPP_SOURCE,
-            CppFileTypes.CPP_HEADER,
-            CppFileTypes.C_SOURCE,
-            CppFileTypes.ASSEMBLER,
-            CppFileTypes.ASSEMBLER_WITH_C_PREPROCESSOR,
-            CppFileTypes.CLIF_INPUT_PROTO)),
-    CC_AND_OBJC(
-        FileTypeSet.of(
-            CppFileTypes.CPP_SOURCE,
-            CppFileTypes.CPP_HEADER,
-            CppFileTypes.OBJC_SOURCE,
-            CppFileTypes.OBJCPP_SOURCE,
-            CppFileTypes.C_SOURCE,
-            CppFileTypes.ASSEMBLER,
-            CppFileTypes.ASSEMBLER_WITH_C_PREPROCESSOR));
-
-    private final FileTypeSet sourceTypeSet;
-
-    SourceCategory(FileTypeSet sourceTypeSet) {
-      this.sourceTypeSet = sourceTypeSet;
-    }
-
-    /** Returns the set of file types that are valid for this category. */
-    public FileTypeSet getSourceTypes() {
-      return sourceTypeSet;
-    }
-  }
-
-  /**
-   * Contains the providers as well as the {@code CcCompilationOutputs} and the {@code
-   * CcCompilationContext}.
-   */
-  // TODO(plf): Rename so that it's not confused with CcCompilationContext and also consider
-  // merging
-  // this class with {@code CcCompilationOutputs}.
-  public static final class CompilationInfo implements CompilationInfoApi<Artifact> {
-    private final CcCompilationContext ccCompilationContext;
-    private final CcCompilationOutputs compilationOutputs;
-
-    private CompilationInfo(
-        CcCompilationContext ccCompilationContext, CcCompilationOutputs compilationOutputs) {
-      this.ccCompilationContext = ccCompilationContext;
-      this.compilationOutputs = compilationOutputs;
-    }
-
-    @Override
-    public CcCompilationOutputs getCcCompilationOutputs() {
-      return compilationOutputs;
-    }
-
-    @Override
-    public CcCompilationContext getCcCompilationContext() {
-      return ccCompilationContext;
-    }
-  }
-
-  private static class CachedCcToolchainVariables {
-    private CcToolchainVariables prebuiltParent;
-    private CcToolchainVariables prebuiltParentWithFdo;
-
-    public CachedCcToolchainVariables() {}
-  }
-
-  private final CppSemantics semantics;
-  private final BuildConfigurationValue configuration;
-  private final ImmutableMap<String, String> executionInfo;
-  private final CppConfiguration cppConfiguration;
-  private final boolean shouldProcessHeaders;
-
-  private final List<Artifact> publicHeaders = new ArrayList<>();
-  private final List<Artifact> separateModuleHeaders = new ArrayList<>();
-  private final List<Artifact> nonModuleMapHeaders = new ArrayList<>();
-  private final List<Artifact> publicTextualHeaders = new ArrayList<>();
-  private final List<Artifact> privateHeaders = new ArrayList<>();
-  private final List<Artifact> additionalInputs = new ArrayList<>();
-  private final List<Artifact> additionalCompilationInputs = new ArrayList<>();
-  private final List<Artifact> additionalIncludeScanningRoots = new ArrayList<>();
-  private final List<PathFragment> additionalExportedHeaders = new ArrayList<>();
-  private final List<CppModuleMap> additionalCppModuleMaps = new ArrayList<>();
-  private final LinkedHashMap<Artifact, CppSource> compilationUnitSources = new LinkedHashMap<>();
-  private final LinkedHashMap<Artifact, CppSource> moduleInterfaceSources = new LinkedHashMap<>();
-  private ImmutableList<String> copts = ImmutableList.of();
-  private ImmutableList<String> conlyopts = ImmutableList.of();
-  private ImmutableList<String> cxxopts = ImmutableList.of();
-  private CoptsFilter coptsFilter = CoptsFilter.alwaysPasses();
-  private final Set<String> defines = new LinkedHashSet<>();
-  private final Set<String> localDefines = new LinkedHashSet<>();
-  private final List<CcCompilationContext> deps = new ArrayList<>();
-  private final List<CcCompilationContext> implementationDeps = new ArrayList<>();
-  private final List<PathFragment> systemIncludeDirs = new ArrayList<>();
-  private final List<PathFragment> quoteIncludeDirs = new ArrayList<>();
-  private final List<PathFragment> includeDirs = new ArrayList<>();
-  private final List<PathFragment> frameworkIncludeDirs = new ArrayList<>();
-
-  private final SourceCategory sourceCategory;
-  private final List<VariablesExtension> variablesExtensions = new ArrayList<>();
-  @Nullable private CppModuleMap cppModuleMap;
-  private boolean propagateModuleMapToCompileAction = true;
-
-  private final FeatureConfiguration featureConfiguration;
-  private final CcToolchainProvider ccToolchain;
-  private final FdoContext fdoContext;
-  private boolean generateModuleMap = true;
-  private String purpose = "";
-  private boolean generateNoPicAction;
-  private boolean generatePicAction;
-  private boolean isCodeCoverageEnabled = true;
-  private String stripIncludePrefix = null;
-  private String includePrefix = null;
-
-  // This context is built out of interface deps and implementation deps.
-  private CcCompilationContext ccCompilationContext;
-
-  private final RuleErrorConsumer ruleErrorConsumer;
-  private final ActionConstructionContext actionConstructionContext;
-  private final Label label;
-
-  /** Creates a CcCompilationHelper that outputs artifacts in a given configuration. */
-  public CcStaticCompilationHelper(
+  static CcCompilationOutputs createCcCompileActions(
       ActionConstructionContext actionConstructionContext,
-      Label label,
-      CppSemantics semantics,
-      FeatureConfiguration featureConfiguration,
-      SourceCategory sourceCategory,
+      List<Artifact> additionalCompilationInputs,
+      List<Artifact> additionalIncludeScanningRoots,
+      CcCompilationContext ccCompilationContext,
       CcToolchainProvider ccToolchain,
-      FdoContext fdoContext,
-      BuildConfigurationValue buildConfiguration,
+      Map<Artifact, CppSource> compilationUnitSources,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CoptsFilter coptsFilter,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
       ImmutableMap<String, String> executionInfo,
-      boolean shouldProcessHeaders)
-      throws EvalException {
-    this.semantics = Preconditions.checkNotNull(semantics);
-    this.featureConfiguration = Preconditions.checkNotNull(featureConfiguration);
-    this.sourceCategory = Preconditions.checkNotNull(sourceCategory);
-    this.ccToolchain = Preconditions.checkNotNull(ccToolchain);
-    this.fdoContext = Preconditions.checkNotNull(fdoContext);
-    this.actionConstructionContext = Preconditions.checkNotNull(actionConstructionContext);
-    this.configuration = Preconditions.checkNotNull(buildConfiguration);
-    this.cppConfiguration = ccToolchain.getCppConfiguration();
-    setGenerateNoPicAction(
-        !CcToolchainProvider.usePicForDynamicLibraries(cppConfiguration, featureConfiguration)
-            || !CppHelper.usePicForBinaries(cppConfiguration, featureConfiguration));
-    setGeneratePicAction(
-        CcToolchainProvider.usePicForDynamicLibraries(cppConfiguration, featureConfiguration)
-            || CppHelper.usePicForBinaries(cppConfiguration, featureConfiguration));
-    this.ruleErrorConsumer = actionConstructionContext.getRuleErrorConsumer();
-    this.label = Preconditions.checkNotNull(label);
-    this.executionInfo = Preconditions.checkNotNull(executionInfo);
-    this.shouldProcessHeaders = shouldProcessHeaders;
-  }
+      FdoContext fdoContext,
+      FeatureConfiguration featureConfiguration,
+      boolean generateNoPicAction,
+      boolean generatePicAction,
+      boolean isCodeCoverageEnabled,
+      Label label,
+      List<Artifact> privateHeaders,
+      List<Artifact> publicHeaders,
+      String purpose,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      List<Artifact> separateModuleHeaders,
+      List<VariablesExtension> variablesExtensions)
+      throws RuleErrorException, EvalException, InterruptedException {
+    CcCompilationOutputs.Builder result = CcCompilationOutputs.builder();
+    Preconditions.checkNotNull(ccCompilationContext);
 
-  /**
-   * Adds {@code headers} as public header files. These files will be made visible to dependent
-   * rules. They may be parsed/preprocessed or compiled into a header module depending on the
-   * configuration.
-   *
-   * <p>The option to pass in a Sequence of (Artifact, Label) Tuples is created for the method
-   * collectPerFileCopts() which in turn supports the --per_file_copt flag.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addPublicHeaders(Sequence<?> headers) throws EvalException {
-    for (Object header : headers) {
-      if (header instanceof Artifact headerArtifact) {
-        addHeader(headerArtifact, label);
-      } else if (header instanceof Tuple headerTuple) {
-        addHeader((Artifact) headerTuple.get(0), (Label) headerTuple.get(1));
-      } else {
-        throw new EvalException("Unsupported public header type: " + header.getClass());
-      }
-    }
-    return this;
-  }
-
-  /**
-   * Adds headers that are compiled into a separate module (when using C++ modules). The idea here
-   * is that a single (generated) library might want to create headers of very different transitive
-   * dependency size. In this case, building headers with very few transitive dependencies into a
-   * separate module can drastrically improve build performance of that module and its users.
-   *
-   * <p>Headers in this separate module must not include any of the regular headers.
-   *
-   * <p>THIS IS AN EXPERIMENTAL FACILITY THAT MIGHT GO AWAY.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addSeparateModuleHeaders(Collection<Artifact> headers) {
-    separateModuleHeaders.addAll(headers);
-    return this;
-  }
-
-  /**
-   * Add the corresponding files as public header files, i.e., these files will not be compiled, but
-   * are made visible as includes to dependent rules in module maps.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addAdditionalExportedHeaders(
-      Iterable<PathFragment> additionalExportedHeaders) {
-    Iterables.addAll(this.additionalExportedHeaders, additionalExportedHeaders);
-    return this;
-  }
-
-  /**
-   * Add the corresponding files as public textual header files. These files will not be compiled
-   * into a target's header module, but will be made visible as textual includes to dependent rules.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addPublicTextualHeaders(List<Artifact> textualHeaders) {
-    Iterables.addAll(this.publicTextualHeaders, textualHeaders);
-    for (Artifact header : textualHeaders) {
-      this.additionalExportedHeaders.add(header.getExecPath());
-    }
-    return this;
-  }
-
-  /**
-   * Adds {@code headers} as private header files. These files will be made visible to dependent
-   * rules. They may be parsed/preprocessed or compiled into a header module depending on the
-   * configuration.
-   *
-   * <p>The option to pass in a Sequence of (Artifact, Label) Tuples is created for the method
-   * collectPerFileCopts() which in turn supports the --per_file_copt flag.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addPrivateHeaders(Sequence<?> headers) throws EvalException {
-    for (Object header : headers) {
-      if (header instanceof Artifact headerArtifact) {
-        addPrivateHeader(headerArtifact, label);
-      } else if (header instanceof Tuple headerTuple) {
-        addPrivateHeader((Artifact) headerTuple.get(0), (Label) headerTuple.get(1));
-      } else {
-        throw new EvalException("Unsupported private header type: " + header.getClass());
-      }
-    }
-    return this;
-  }
-
-  @CanIgnoreReturnValue
-  private CcStaticCompilationHelper addPrivateHeader(Artifact privateHeader, Label label) {
-    boolean isHeader =
-        CppFileTypes.CPP_HEADER.matches(privateHeader.getExecPath())
-            || privateHeader.isTreeArtifact();
-    boolean isTextualInclude =
-        CppFileTypes.CPP_TEXTUAL_INCLUDE.matches(privateHeader.getExecPath());
-    Preconditions.checkState(isHeader || isTextualInclude);
-
-    if (shouldProcessHeaders
-        && CcToolchainProvider.shouldProcessHeaders(featureConfiguration, cppConfiguration)
-        && !shouldProvideHeaderModules(featureConfiguration, privateHeaders, publicHeaders)
-        && !isTextualInclude) {
-      compilationUnitSources.put(
-          privateHeader, CppSource.create(privateHeader, label, CppSource.Type.HEADER));
-    }
-    this.privateHeaders.add(privateHeader);
-    return this;
-  }
-
-  /**
-   * Add the corresponding files as source files. These may also be header files, in which case they
-   * will not be compiled, but also not made visible as includes to dependent rules.
-   *
-   * <p>The option to pass in a Sequence of (Artifact, Label) Tuples is created for the method
-   * collectPerFileCopts() which in turn supports the --per_file_copt flag.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addSources(Sequence<?> sources) throws EvalException {
-    for (Object source : sources) {
-      if (source instanceof Artifact sourceArtifact) {
-        addSource(sourceArtifact, label);
-      } else if (source instanceof Tuple sourceTuple) {
-        addSource((Artifact) sourceTuple.get(0), (Label) sourceTuple.get(1));
-      } else {
-        throw new EvalException("Unsupported source type: " + source.getClass());
-      }
-    }
-    return this;
-  }
-
-  /**
-   * Add the corresponding files as module interface source files.
-   *
-   * <p>The option to pass in a Sequence of (Artifact, Label) Tuples is created for the method
-   * collectPerFileCopts() which in turn supports the --per_file_copt flag.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addModuleInterfaceSources(Sequence<?> sources)
-      throws EvalException {
-    for (Object source : sources) {
-      if (source instanceof Artifact sourceArtifact) {
-        addModuleInterfaceSource(sourceArtifact, label);
-      } else if (source instanceof Tuple sourceTuple) {
-        addModuleInterfaceSource((Artifact) sourceTuple.get(0), (Label) sourceTuple.get(1));
-      } else {
-        throw new EvalException("Unsupported module interface source type: " + source.getClass());
-      }
-    }
-    return this;
-  }
-
-  private void addModuleInterfaceSource(Artifact source, Label label) {
-    Preconditions.checkNotNull(featureConfiguration);
-    moduleInterfaceSources.put(source, CppSource.create(source, label, CppSource.Type.SOURCE));
-  }
-
-  /** Add the corresponding files as non-header, non-source input files. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addAdditionalInputs(Collection<Artifact> inputs) {
-    Iterables.addAll(additionalInputs, inputs);
-    return this;
-  }
-
-  /**
-   * Adds a header to {@code publicHeaders} and in case header processing is switched on for the
-   * file type also to compilationUnitSources.
-   */
-  private void addHeader(Artifact header, Label label) {
-    // We assume TreeArtifacts passed in are directories containing proper headers.
-    boolean isHeader =
-        CppFileTypes.CPP_HEADER.matches(header.getExecPath()) || header.isTreeArtifact();
-    boolean isTextualInclude = CppFileTypes.CPP_TEXTUAL_INCLUDE.matches(header.getExecPath());
-    publicHeaders.add(header);
-    if (!shouldProcessHeaders
-        || isTextualInclude
-        || !isHeader
-        || !CcToolchainProvider.shouldProcessHeaders(featureConfiguration, cppConfiguration)
-        || shouldProvideHeaderModules(featureConfiguration, privateHeaders, publicHeaders)) {
-      return;
+    if (generatePicAction
+        && !featureConfiguration.isEnabled(CppRuleClasses.PIC)
+        && !featureConfiguration.isEnabled(CppRuleClasses.SUPPORTS_PIC)) {
+      ruleErrorConsumer.ruleError(CcCommon.PIC_CONFIGURATION_ERROR);
     }
 
-    compilationUnitSources.put(header, CppSource.create(header, label, CppSource.Type.HEADER));
-  }
+    CcToolchainVariables commonToolchainVariables =
+        setupCommonCompileBuildVariables(
+            ccCompilationContext,
+            ccToolchain,
+            cppConfiguration,
+            fdoContext,
+            featureConfiguration,
+            variablesExtensions);
 
-  /**
-   * Adds a source to {@code compilationUnitSources} if it is a compiled file type (including
-   * parsed/preprocessed header) and to {@code privateHeaders} if it is a header.
-   */
-  private void addSource(Artifact source, Label label) {
-    Preconditions.checkNotNull(featureConfiguration);
-    Preconditions.checkState(!CppFileTypes.CPP_HEADER.matches(source.getExecPath()));
-    // We assume TreeArtifacts passed in are directories containing proper sources for compilation.
-    if (!sourceCategory.getSourceTypes().matches(source.getExecPathString())
-        && !source.isTreeArtifact()) {
-      // TODO(plf): If it's a non-source file we ignore it. This is only the case for precompiled
-      // files which should be forbidden in srcs of cc_library|binary and instead be migrated to
-      // cc_import rules.
-      return;
-    }
+    NestedSet<Artifact> auxiliaryFdoInputs =
+        getAuxiliaryFdoInputs(ccToolchain, fdoContext, featureConfiguration);
 
-    boolean isClifInputProto = CppFileTypes.CLIF_INPUT_PROTO.matches(source.getExecPathString());
-    CppSource.Type type;
-    if (isClifInputProto) {
-      type = CppSource.Type.CLIF_INPUT_PROTO;
-    } else {
-      type = CppSource.Type.SOURCE;
-    }
-    compilationUnitSources.put(source, CppSource.create(source, label, type));
-  }
+    ImmutableMap<String, String> fdoBuildVariables =
+        setupFdoBuildVariables(
+            ccToolchain,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            cppConfiguration.getFdoInstrument(),
+            cppConfiguration.getCSFdoInstrument());
 
-  /**
-   * Returns the compilation unit sources. That includes all compiled source files as well as
-   * headers that will be parsed or preprocessed. Each source file contains the label it arises from
-   * in the build graph as well as {@code FeatureConfiguration} that should be used during its
-   * compilation.
-   */
-  public ImmutableSet<CppSource> getCompilationUnitSources() {
-    return ImmutableSet.copyOf(this.compilationUnitSources.values());
-  }
-
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setCopts(ImmutableList<String> copts) {
-    this.copts = Preconditions.checkNotNull(copts);
-    return this;
-  }
-
-  /** Sets a pattern that is used to filter copts; set to {@code null} for no filtering. */
-  public void setCoptsFilter(CoptsFilter coptsFilter) {
-    this.coptsFilter = Preconditions.checkNotNull(coptsFilter);
-  }
-
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setConlyopts(ImmutableList<String> copts) {
-    this.conlyopts = Preconditions.checkNotNull(copts);
-    return this;
-  }
-
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setCxxopts(ImmutableList<String> copts) {
-    this.cxxopts = Preconditions.checkNotNull(copts);
-    return this;
-  }
-
-  /**
-   * Adds the given defines to the compiler command line of this target as well as its dependent
-   * targets.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addDefines(Iterable<String> defines) {
-    Iterables.addAll(this.defines, defines);
-    return this;
-  }
-
-  /**
-   * Adds the given defines to the compiler command line. These defines are not propagated
-   * transitively to the dependent targets.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addNonTransitiveDefines(Iterable<String> defines) {
-    Iterables.addAll(this.localDefines, defines);
-    return this;
-  }
-
-  /** For adding CC compilation infos that affect compilation, for example from dependencies. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addCcCompilationContexts(
-      Iterable<CcCompilationContext> ccCompilationContexts) {
-    Iterables.addAll(this.deps, Preconditions.checkNotNull(ccCompilationContexts));
-    return this;
-  }
-
-  /**
-   * For adding CC compilation infos that affect compilation non-transitively, for example from
-   * dependencies.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addImplementationDepsCcCompilationContexts(
-      Iterable<CcCompilationContext> ccCompileActionCompilationContexts) {
-    Iterables.addAll(
-        this.implementationDeps, Preconditions.checkNotNull(ccCompileActionCompilationContexts));
-    return this;
-  }
-
-  /**
-   * Adds the given directories to the system include directories (they are passed with {@code
-   * "-isystem"} to the compiler); these are also passed to dependent rules.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addSystemIncludeDirs(Iterable<PathFragment> systemIncludeDirs) {
-    Iterables.addAll(this.systemIncludeDirs, systemIncludeDirs);
-    return this;
-  }
-
-  /**
-   * Adds the given directories to the quote include directories (they are passed with {@code
-   * "-iquote"} to the compiler); these are also passed to dependent rules.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addQuoteIncludeDirs(Iterable<PathFragment> quoteIncludeDirs) {
-    Iterables.addAll(this.quoteIncludeDirs, quoteIncludeDirs);
-    return this;
-  }
-
-  /**
-   * Adds the given directories to the include directories (they are passed with {@code "-I"} to the
-   * compiler); these are also passed to dependent rules.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addIncludeDirs(Iterable<PathFragment> includeDirs) {
-    Iterables.addAll(this.includeDirs, includeDirs);
-    return this;
-  }
-
-  /**
-   * Adds the given directories to the framework include directories (they are passed with {@code
-   * "-F"} to the compiler); these are also passed to dependent rules.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addFrameworkIncludeDirs(
-      Iterable<PathFragment> frameworkIncludeDirs) {
-    Iterables.addAll(this.frameworkIncludeDirs, frameworkIncludeDirs);
-    return this;
-  }
-
-  /** Adds a variableExtension to template the crosstool. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addVariableExtension(VariablesExtension variableExtension) {
-    Preconditions.checkNotNull(variableExtension);
-    this.variablesExtensions.add(variableExtension);
-    return this;
-  }
-
-  /** Sets a module map artifact for this build. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setCppModuleMap(CppModuleMap cppModuleMap) {
-    Preconditions.checkNotNull(cppModuleMap);
-    this.cppModuleMap = cppModuleMap;
-    return this;
-  }
-
-  /** Signals that this target's module map should not be an input to c++ compile actions. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setPropagateModuleMapToCompileAction(
-      boolean propagatesModuleMap) {
-    this.propagateModuleMapToCompileAction = propagatesModuleMap;
-    return this;
-  }
-
-  /** Whether to generate no-PIC actions. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setGenerateNoPicAction(boolean generateNoPicAction) {
-    this.generateNoPicAction = generateNoPicAction;
-    return this;
-  }
-
-  /** Whether to generate PIC actions. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setGeneratePicAction(boolean generatePicAction) {
-    this.generatePicAction = generatePicAction;
-    return this;
-  }
-
-  /** Adds mandatory inputs for the compilation action. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addAdditionalCompilationInputs(
-      Collection<Artifact> compilationMandatoryInputs) {
-    this.additionalCompilationInputs.addAll(compilationMandatoryInputs);
-    return this;
-  }
-
-  /** Adds additional includes to be scanned. */
-  // TODO(plf): This is only needed for CLIF. Investigate whether this is strictly necessary or
-  // there is a way to avoid include scanning for CLIF rules.
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper addAdditionalIncludeScanningRoots(
-      Collection<Artifact> additionalIncludeScanningRoots) {
-    this.additionalIncludeScanningRoots.addAll(additionalIncludeScanningRoots);
-    return this;
-  }
-
-  /** Sets the include prefix to append to the public headers. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setIncludePrefix(@Nullable String includePrefix) {
-    this.includePrefix = includePrefix;
-    return this;
-  }
-
-  /** Sets the include prefix to remove from the public headers. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setStripIncludePrefix(@Nullable String stripIncludePrefix) {
-    this.stripIncludePrefix = stripIncludePrefix;
-    return this;
-  }
-
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setCodeCoverageEnabled(boolean codeCoverageEnabled) {
-    this.isCodeCoverageEnabled = codeCoverageEnabled;
-    return this;
-  }
-
-  private static StarlarkList<String> convertPathFragmentsToStarlarkList(
-      Iterable<PathFragment> pathFragments) {
-    ImmutableList.Builder<String> pathStrings = ImmutableList.builder();
-    for (PathFragment pathFragment : pathFragments) {
-      pathStrings.add(pathFragment.getPathString());
-    }
-    return StarlarkList.immutableCopyOf(pathStrings.build());
-  }
-
-  private Tuple callStarlarkInit(RuleContext ruleContext)
-      throws RuleErrorException, InterruptedException {
-    StarlarkFunction initCcCompilationContext =
-        (StarlarkFunction) ruleContext.getStarlarkDefinedBuiltin("init_cc_compilation_context");
-    ruleContext.initStarlarkRuleContext();
-    try {
-      return (Tuple)
-          ruleContext.callStarlarkOrThrowRuleError(
-              initCcCompilationContext,
-              ImmutableList.of(
-                  /* ctx */ ruleContext.getStarlarkRuleContext(),
-                  /* binfiles_dir */ ruleContext.getBinFragment().getPathString(),
-                  /* genfiles_dir */ ruleContext.getGenfilesFragment().getPathString(),
-                  /* label */ label,
-                  /* config */ configuration,
-                  /* quote_include_dirs */ convertPathFragmentsToStarlarkList(quoteIncludeDirs),
-                  /* framework_include_dirs */ convertPathFragmentsToStarlarkList(
-                      frameworkIncludeDirs),
-                  /* system_include_dirs */ convertPathFragmentsToStarlarkList(systemIncludeDirs),
-                  /* include_dirs */ convertPathFragmentsToStarlarkList(includeDirs),
-                  /* feature_configuration */ FeatureConfigurationForStarlark.from(
-                      featureConfiguration),
-                  /* public_headers_artifacts */ StarlarkList.immutableCopyOf(publicHeaders),
-                  /* include_prefix */ includePrefix == null ? Starlark.NONE : includePrefix,
-                  /* strip_include_prefix */ stripIncludePrefix == null
-                      ? Starlark.NONE
-                      : stripIncludePrefix,
-                  /* non_module_map_headers */ StarlarkList.immutableCopyOf(nonModuleMapHeaders),
-                  /* cc_toolchain_compilation_context */ ccToolchain == null
-                      ? Starlark.NONE
-                      : ccToolchain.getCcInfo().getCcCompilationContext(),
-                  /* defines */ StarlarkList.immutableCopyOf(defines),
-                  /* local_defines */ StarlarkList.immutableCopyOf(localDefines),
-                  /* public_textual_headers */ StarlarkList.immutableCopyOf(publicTextualHeaders),
-                  /* private_headers_artifacts */ StarlarkList.immutableCopyOf(privateHeaders),
-                  /* additional_inputs */ StarlarkList.immutableCopyOf(additionalInputs),
-                  /* separate_module_headers */ StarlarkList.immutableCopyOf(separateModuleHeaders),
-                  /* generate_module_map */ generateModuleMap,
-                  /* generate_pic_action */ generatePicAction,
-                  /* generate_no_pic_action */ generateNoPicAction,
-                  /* module_map */ cppModuleMap == null ? Starlark.NONE : cppModuleMap,
-                  /* propagate_module_map_to_compile_action */ propagateModuleMapToCompileAction,
-                  /* additional_exported_headers */ convertPathFragmentsToStarlarkList(
-                      additionalExportedHeaders),
-                  /* deps */ StarlarkList.immutableCopyOf(deps),
-                  /* purpose */ purpose,
-                  /* implementation_deps */ StarlarkList.immutableCopyOf(implementationDeps),
-                  /* additional_cpp_module_maps */ StarlarkList.immutableCopyOf(
-                      additionalCppModuleMaps)),
-              ImmutableMap.of());
-    } catch (EvalException e) {
-      throw new RuleErrorException(e.getMessage());
-    }
-  }
-
-  /** Create the C++ compile actions, and the corresponding compilation related providers. */
-  public CompilationInfo compile(RuleContext ruleContext)
-      throws RuleErrorException, InterruptedException {
-
-    if (!generatePicAction && !generateNoPicAction) {
-      ruleErrorConsumer.ruleError("Either PIC or no PIC actions have to be created.");
-    }
-
-    Tuple ccCompilationContextObjectsTuple = callStarlarkInit(ruleContext);
-
-    CcCompilationContext publicCompilationContext =
-        (CcCompilationContext) ccCompilationContextObjectsTuple.get(0);
-    ccCompilationContext = publicCompilationContext;
-    if (!implementationDeps.isEmpty()) {
-      Preconditions.checkState(
-          ccCompilationContextObjectsTuple.get(1) != Starlark.NONE,
-          "Compilation context for implementation deps was not created");
-      ccCompilationContext = (CcCompilationContext) ccCompilationContextObjectsTuple.get(1);
-    }
-
-    boolean compileHeaderModules = featureConfiguration.isEnabled(CppRuleClasses.HEADER_MODULES);
-    Preconditions.checkState(
-        !compileHeaderModules || publicCompilationContext.getCppModuleMap() != null,
-        "All cc rules must support module maps.");
-
-    // Create compile actions (both PIC and no-PIC).
-    try {
-      CcCompilationOutputs ccOutputs =
-          createCcCompileActions(
+    if (shouldProvideHeaderModules(featureConfiguration, privateHeaders, publicHeaders)) {
+      CppModuleMap cppModuleMap = ccCompilationContext.getCppModuleMap();
+      Label moduleMapLabel = Label.parseCanonicalUnchecked(cppModuleMap.getName());
+      ImmutableList<Artifact> modules =
+          createModuleAction(
               actionConstructionContext,
-              additionalCompilationInputs,
-              additionalIncludeScanningRoots,
               ccCompilationContext,
               ccToolchain,
-              compilationUnitSources,
               configuration,
               conlyopts,
               copts,
@@ -859,54 +147,316 @@ public final class CcStaticCompilationHelper {
               cxxopts,
               executionInfo,
               fdoContext,
+              auxiliaryFdoInputs,
               featureConfiguration,
               generateNoPicAction,
               generatePicAction,
-              isCodeCoverageEnabled,
               label,
-              privateHeaders,
-              publicHeaders,
-              purpose,
+              commonToolchainVariables,
+              fdoBuildVariables,
               ruleErrorConsumer,
               semantics,
-              separateModuleHeaders,
-              variablesExtensions);
-
-      if (cppConfiguration.processHeadersInDependencies()) {
-        return new CompilationInfo(
-            CcCompilationContext.createWithExtraHeaderTokens(
-                publicCompilationContext, ccOutputs.getHeaderTokenFiles()),
-            ccOutputs);
-      } else {
-        return new CompilationInfo(publicCompilationContext, ccOutputs);
+              result,
+              cppModuleMap);
+      ImmutableList<Artifact> separateModules = ImmutableList.of();
+      if (!separateModuleHeaders.isEmpty()) {
+        CppModuleMap separateMap =
+            new CppModuleMap(
+                cppModuleMap.getArtifact(),
+                cppModuleMap.getName() + CppModuleMap.SEPARATE_MODULE_SUFFIX);
+        separateModules =
+            createModuleAction(
+                actionConstructionContext,
+                ccCompilationContext,
+                ccToolchain,
+                configuration,
+                conlyopts,
+                copts,
+                coptsFilter,
+                cppConfiguration,
+                cxxopts,
+                executionInfo,
+                fdoContext,
+                auxiliaryFdoInputs,
+                featureConfiguration,
+                generateNoPicAction,
+                generatePicAction,
+                label,
+                commonToolchainVariables,
+                fdoBuildVariables,
+                ruleErrorConsumer,
+                semantics,
+                result,
+                separateMap);
       }
-    } catch (EvalException e) {
-      throw new RuleErrorException(e.getMessage());
+      if (featureConfiguration.isEnabled(CppRuleClasses.HEADER_MODULE_CODEGEN)) {
+        for (Artifact module : Iterables.concat(modules, separateModules)) {
+          // TODO(djasper): Investigate whether we need to use a label separate from that of the
+          // module map. It is used for per-file-copts.
+          createModuleCodegenAction(
+              actionConstructionContext,
+              ccCompilationContext,
+              ccToolchain,
+              configuration,
+              conlyopts,
+              copts,
+              coptsFilter,
+              cppConfiguration,
+              cxxopts,
+              executionInfo,
+              fdoContext,
+              auxiliaryFdoInputs,
+              featureConfiguration,
+              isCodeCoverageEnabled,
+              label,
+              commonToolchainVariables,
+              fdoBuildVariables,
+              ruleErrorConsumer,
+              semantics,
+              result,
+              moduleMapLabel,
+              module);
+        }
+      }
     }
+
+    String outputNamePrefixDir = null;
+    // purpose is only used by objc rules; if set it ends with either "_non_objc_arc" or
+    // "_objc_arc", and it is used to override configuration.getMnemonic() to prefix the output
+    // dir with "non_arc" or "arc".
+    String mnemonic = configuration.getMnemonic();
+    if (purpose != null) {
+      mnemonic = purpose;
+    }
+    if (mnemonic.endsWith("_objc_arc")) {
+      outputNamePrefixDir = mnemonic.endsWith("_non_objc_arc") ? "non_arc" : "arc";
+    }
+    ImmutableMap<Artifact, String> outputNameMap =
+        calculateOutputNameMapByType(compilationUnitSources, outputNamePrefixDir);
+
+    Set<String> compiledBasenames = new HashSet<>();
+    for (CppSource source : compilationUnitSources.values()) {
+      Artifact sourceArtifact = source.getSource();
+
+      // Headers compilations will be created in the loop below.
+      if (!sourceArtifact.isTreeArtifact() && source.getType() == CppSource.Type.HEADER) {
+        continue;
+      }
+
+      String outputName = outputNameMap.get(sourceArtifact);
+
+      Label sourceLabel = source.getLabel();
+      CppCompileActionBuilder builder =
+          createCppCompileActionBuilderWithInputs(
+              actionConstructionContext,
+              ccCompilationContext,
+              ccToolchain,
+              configuration,
+              coptsFilter,
+              executionInfo,
+              featureConfiguration,
+              semantics,
+              sourceArtifact,
+              additionalCompilationInputs,
+              additionalIncludeScanningRoots);
+
+      boolean bitcodeOutput =
+          featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO)
+              && CppFileTypes.LTO_SOURCE.matches(sourceArtifact.getFilename());
+
+      if (!sourceArtifact.isTreeArtifact()) {
+        compiledBasenames.add(Files.getNameWithoutExtension(sourceArtifact.getExecPathString()));
+        createCompileSourceActionFromBuilder(
+            actionConstructionContext,
+            ccCompilationContext,
+            ccToolchain,
+            configuration,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            generateNoPicAction,
+            generatePicAction,
+            label,
+            commonToolchainVariables,
+            fdoBuildVariables,
+            ruleErrorConsumer,
+            semantics,
+            sourceLabel,
+            outputName,
+            result,
+            sourceArtifact,
+            builder,
+            // TODO(plf): Continue removing CLIF logic from C++. Follow up changes would include
+            // refactoring CppSource.Type and ArtifactCategory to be classes instead of enums
+            // that could be instantiated with arbitrary values.
+            source.getType() == CppSource.Type.CLIF_INPUT_PROTO
+                ? ArtifactCategory.CLIF_OUTPUT_PROTO
+                : ArtifactCategory.OBJECT_FILE,
+            ccCompilationContext.getCppModuleMap(),
+            /* addObject= */ true,
+            isCodeCoverageEnabled,
+            // The source action does not generate dwo when it has bitcode
+            // output (since it isn't generating a native object with debug
+            // info). In that case the LtoBackendAction will generate the dwo.
+            CcToolchainProvider.shouldCreatePerObjectDebugInfo(
+                featureConfiguration, cppConfiguration),
+            bitcodeOutput);
+      } else {
+        switch (source.getType()) {
+          case HEADER:
+            Artifact headerTokenFile =
+                createCompileActionTemplate(
+                    actionConstructionContext,
+                    ccCompilationContext,
+                    ccToolchain,
+                    configuration,
+                    conlyopts,
+                    copts,
+                    cppConfiguration,
+                    cxxopts,
+                    fdoContext,
+                    auxiliaryFdoInputs,
+                    featureConfiguration,
+                    label,
+                    commonToolchainVariables,
+                    fdoBuildVariables,
+                    ruleErrorConsumer,
+                    semantics,
+                    source,
+                    outputName,
+                    builder,
+                    result,
+                    ImmutableList.of(
+                        ArtifactCategory.GENERATED_HEADER, ArtifactCategory.PROCESSED_HEADER),
+                    // If we generate pic actions, we prefer the header actions to use the pic mode.
+                    generatePicAction,
+                    bitcodeOutput);
+            result.addHeaderTokenFile(headerTokenFile);
+            break;
+          case SOURCE:
+            if (generateNoPicAction) {
+              Artifact objectFile =
+                  createCompileActionTemplate(
+                      actionConstructionContext,
+                      ccCompilationContext,
+                      ccToolchain,
+                      configuration,
+                      conlyopts,
+                      copts,
+                      cppConfiguration,
+                      cxxopts,
+                      fdoContext,
+                      auxiliaryFdoInputs,
+                      featureConfiguration,
+                      label,
+                      commonToolchainVariables,
+                      fdoBuildVariables,
+                      ruleErrorConsumer,
+                      semantics,
+                      source,
+                      outputName,
+                      builder,
+                      result,
+                      ImmutableList.of(ArtifactCategory.OBJECT_FILE),
+                      /* usePic= */ false,
+                      featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO));
+              result.addObjectFile(objectFile);
+            }
+
+            if (generatePicAction) {
+              Artifact picObjectFile =
+                  createCompileActionTemplate(
+                      actionConstructionContext,
+                      ccCompilationContext,
+                      ccToolchain,
+                      configuration,
+                      conlyopts,
+                      copts,
+                      cppConfiguration,
+                      cxxopts,
+                      fdoContext,
+                      auxiliaryFdoInputs,
+                      featureConfiguration,
+                      label,
+                      commonToolchainVariables,
+                      fdoBuildVariables,
+                      ruleErrorConsumer,
+                      semantics,
+                      source,
+                      outputName,
+                      builder,
+                      result,
+                      ImmutableList.of(ArtifactCategory.PIC_OBJECT_FILE),
+                      /* usePic= */ true,
+                      featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO));
+              result.addPicObjectFile(picObjectFile);
+            }
+            break;
+          default:
+            throw new IllegalStateException(
+                "Encountered invalid source types when creating CppCompileActionTemplates");
+        }
+      }
+    }
+    for (CppSource source : compilationUnitSources.values()) {
+      Artifact artifact = source.getSource();
+      if (source.getType() != CppSource.Type.HEADER || artifact.isTreeArtifact()) {
+        // These are already handled above.
+        continue;
+      }
+      if (featureConfiguration.isEnabled(CppRuleClasses.VALIDATES_LAYERING_CHECK_IN_TEXTUAL_HDRS)
+          && compiledBasenames.contains(
+              Files.getNameWithoutExtension(artifact.getExecPathString()))) {
+        continue;
+      }
+      String outputName = outputNameMap.get(artifact);
+
+      CppCompileActionBuilder builder =
+          createCppCompileActionBuilderWithInputs(
+              actionConstructionContext,
+              ccCompilationContext,
+              ccToolchain,
+              configuration,
+              coptsFilter,
+              executionInfo,
+              featureConfiguration,
+              semantics,
+              artifact,
+              additionalCompilationInputs,
+              additionalIncludeScanningRoots);
+
+      createParseHeaderAction(
+          actionConstructionContext,
+          ccCompilationContext,
+          ccToolchain,
+          configuration,
+          conlyopts,
+          copts,
+          cppConfiguration,
+          cxxopts,
+          fdoContext,
+          auxiliaryFdoInputs,
+          featureConfiguration,
+          generatePicAction,
+          label,
+          commonToolchainVariables,
+          fdoBuildVariables,
+          ruleErrorConsumer,
+          semantics,
+          source.getLabel(),
+          outputName,
+          result,
+          builder);
+    }
+
+    return result.build();
   }
 
-  public void registerAdditionalModuleMap(CppModuleMap cppModuleMap) {
-    this.additionalCppModuleMaps.add(Preconditions.checkNotNull(cppModuleMap));
-  }
-
-  /** Don't generate a module map for this target if a custom module map is provided. */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper doNotGenerateModuleMap() {
-    generateModuleMap = false;
-    return this;
-  }
-
-  /**
-   * Sets the purpose for the {@code CcCompilationContext}.
-   *
-   * @param purpose the purpose. Only used to influence the location of the output of Objective-C
-   *     compilation.
-   */
-  @CanIgnoreReturnValue
-  public CcStaticCompilationHelper setPurpose(String purpose) {
-    this.purpose = Preconditions.checkNotNull(purpose);
-    return this;
-  }
+  // Misc. helper methods for createCcCompileActions():
 
   /**
    * @return whether we want to provide header modules for the current target.
@@ -1001,383 +551,318 @@ public final class CcStaticCompilationHelper {
     return result.build();
   }
 
-  /**
-   * Constructs the C++ compiler actions. It generally creates one action for every specified source
-   * file. It takes into account coverage, and PIC, in addition to using the settings specified on
-   * the current object. This method should only be called once.
-   */
-  private static CcCompilationOutputs createCcCompileActions(
-      ActionConstructionContext actionConstructionContext,
-      List<Artifact> additionalCompilationInputs,
-      List<Artifact> additionalIncludeScanningRoots,
+  // Methods setting up compile build variables:
+
+  private static CcToolchainVariables setupCommonCompileBuildVariables(
       CcCompilationContext ccCompilationContext,
       CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CoptsFilter coptsFilter,
       CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      ImmutableMap<String, String> executionInfo,
       FdoContext fdoContext,
       FeatureConfiguration featureConfiguration,
-      boolean generateNoPicAction,
-      boolean generatePicAction,
-      boolean isCodeCoverageEnabled,
-      Label label,
-      List<Artifact> privateHeaders,
-      List<Artifact> publicHeaders,
-      String purpose,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<Artifact> separateModuleHeaders,
       List<VariablesExtension> variablesExtensions)
-      throws RuleErrorException, EvalException, InterruptedException {
-    CcCompilationOutputs.Builder result = CcCompilationOutputs.builder();
-    Preconditions.checkNotNull(ccCompilationContext);
-    CachedCcToolchainVariables cachedCcToolchainVariables = new CachedCcToolchainVariables();
-
-    if (shouldProvideHeaderModules(featureConfiguration, privateHeaders, publicHeaders)) {
-      CppModuleMap cppModuleMap = ccCompilationContext.getCppModuleMap();
-      Label moduleMapLabel = Label.parseCanonicalUnchecked(cppModuleMap.getName());
-      ImmutableList<Artifact> modules =
-          createModuleAction(
-              actionConstructionContext,
-              ccCompilationContext,
-              ccToolchain,
-              compilationUnitSources,
-              configuration,
-              conlyopts,
-              copts,
-              coptsFilter,
-              cppConfiguration,
-              cxxopts,
-              executionInfo,
-              fdoContext,
-              featureConfiguration,
-              generateNoPicAction,
-              generatePicAction,
-              label,
-              cachedCcToolchainVariables,
-              ruleErrorConsumer,
-              semantics,
-              variablesExtensions,
-              result,
-              cppModuleMap);
-      ImmutableList<Artifact> separateModules = ImmutableList.of();
-      if (!separateModuleHeaders.isEmpty()) {
-        CppModuleMap separateMap =
-            new CppModuleMap(
-                cppModuleMap.getArtifact(),
-                cppModuleMap.getName() + CppModuleMap.SEPARATE_MODULE_SUFFIX);
-        separateModules =
-            createModuleAction(
-                actionConstructionContext,
-                ccCompilationContext,
-                ccToolchain,
-                compilationUnitSources,
-                configuration,
-                conlyopts,
-                copts,
-                coptsFilter,
-                cppConfiguration,
-                cxxopts,
-                executionInfo,
-                fdoContext,
-                featureConfiguration,
-                generateNoPicAction,
-                generatePicAction,
-                label,
-                cachedCcToolchainVariables,
-                ruleErrorConsumer,
-                semantics,
-                variablesExtensions,
-                result,
-                separateMap);
-      }
-      if (featureConfiguration.isEnabled(CppRuleClasses.HEADER_MODULE_CODEGEN)) {
-        for (Artifact module : Iterables.concat(modules, separateModules)) {
-          // TODO(djasper): Investigate whether we need to use a label separate from that of the
-          // module map. It is used for per-file-copts.
-          createModuleCodegenAction(
-              actionConstructionContext,
-              ccCompilationContext,
-              ccToolchain,
-              compilationUnitSources,
-              configuration,
-              conlyopts,
-              copts,
-              coptsFilter,
-              cppConfiguration,
-              cxxopts,
-              executionInfo,
-              fdoContext,
-              featureConfiguration,
-              isCodeCoverageEnabled,
-              label,
-              cachedCcToolchainVariables,
-              ruleErrorConsumer,
-              semantics,
-              variablesExtensions,
-              result,
-              moduleMapLabel,
-              module);
-        }
-      }
+      throws RuleErrorException, EvalException {
+    Map<String, String> genericAdditionalBuildVariables = new LinkedHashMap<>();
+    CcToolchainVariables cctoolchainVariables;
+    try {
+      cctoolchainVariables = ccToolchain.getBuildVars();
+    } catch (EvalException e) {
+      throw new RuleErrorException(e.getMessage());
     }
-
-    String outputNamePrefixDir = null;
-    // purpose is only used by objc rules, it ends with either "_non_objc_arc" or "_objc_arc".
-    // Here we use it to distinguish arc and non-arc compilation.
-    Preconditions.checkNotNull(purpose);
-    if (purpose.endsWith("_objc_arc")) {
-      outputNamePrefixDir = purpose.endsWith("_non_objc_arc") ? "non_arc" : "arc";
+    boolean isUsingMemProf = false;
+    if (fdoContext != null && fdoContext.getMemProfProfileArtifact() != null) {
+      isUsingMemProf = true;
     }
-    ImmutableMap<Artifact, String> outputNameMap =
-        calculateOutputNameMapByType(compilationUnitSources, outputNamePrefixDir);
+    CcToolchainVariables.Builder buildVariables =
+        CcToolchainVariables.builder(cctoolchainVariables);
+    CompileBuildVariables.setupCommonVariables(
+        buildVariables,
+        featureConfiguration,
+        ImmutableList.of(),
+        CppHelper.getFdoBuildStamp(cppConfiguration, fdoContext, featureConfiguration),
+        isUsingMemProf,
+        variablesExtensions,
+        genericAdditionalBuildVariables,
+        ccCompilationContext.getIncludeDirs(),
+        ccCompilationContext.getQuoteIncludeDirs(),
+        ccCompilationContext.getSystemIncludeDirs(),
+        ccCompilationContext.getFrameworkIncludeDirs(),
+        ccCompilationContext.getDefines(),
+        ccCompilationContext.getNonTransitiveDefines(),
+        ccCompilationContext.getExternalIncludeDirs());
 
-    Set<String> compiledBasenames = new HashSet<>();
-    for (CppSource source : compilationUnitSources.values()) {
-      Artifact sourceArtifact = source.getSource();
+    return buildVariables.build();
+  }
 
-      // Headers compilations will be created in the loop below.
-      if (!sourceArtifact.isTreeArtifact() && source.getType() == CppSource.Type.HEADER) {
-        continue;
-      }
-
-      Label sourceLabel = source.getLabel();
-      CppCompileActionBuilder builder =
-          initializeCompileAction(
-              actionConstructionContext,
-              ccCompilationContext,
-              ccToolchain,
-              configuration,
-              coptsFilter,
-              executionInfo,
-              featureConfiguration,
-              semantics,
-              sourceArtifact);
-
-      builder
-          .addMandatoryInputs(additionalCompilationInputs)
-          .addAdditionalIncludeScanningRoots(additionalIncludeScanningRoots);
-
-      boolean bitcodeOutput =
-          featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO)
-              && CppFileTypes.LTO_SOURCE.matches(sourceArtifact.getFilename());
-
-      String outputName = outputNameMap.get(sourceArtifact);
-
-      if (!sourceArtifact.isTreeArtifact()) {
-        compiledBasenames.add(Files.getNameWithoutExtension(sourceArtifact.getExecPathString()));
-        createSourceAction(
-            actionConstructionContext,
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            configuration,
+  private static CcToolchainVariables setupSpecificCompileBuildVariables(
+      CcToolchainVariables commonToolchainVariables,
+      CcCompilationContext ccCompilationContext,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      CppSemantics semantics,
+      CppCompileActionBuilder ccCompileActionBuilder,
+      Label sourceLabel,
+      boolean usePic,
+      boolean needsFdoBuildVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      CppModuleMap cppModuleMap,
+      boolean enableCoverage,
+      Artifact gcnoFile,
+      boolean isUsingFission,
+      Artifact dwoFile,
+      Artifact ltoIndexingFile,
+      ImmutableMap<String, String> additionalBuildVariables)
+      throws EvalException {
+    Artifact sourceFile = ccCompileActionBuilder.getSourceFile();
+    if (needsFdoBuildVariables && fdoContext.hasArtifacts()) {
+      // This modifies the passed-in builder, which is a surprising side-effect, and makes it unsafe
+      // to call this method multiple times for the same builder.
+      ccCompileActionBuilder.addMandatoryInputs(auxiliaryFdoInputs);
+    }
+    CcToolchainVariables.Builder buildVariables =
+        CcToolchainVariables.builder(commonToolchainVariables);
+    CompileBuildVariables.setupSpecificVariables(
+        buildVariables,
+        sourceFile,
+        ccCompileActionBuilder.getOutputFile(),
+        enableCoverage,
+        gcnoFile,
+        dwoFile,
+        isUsingFission,
+        ltoIndexingFile,
+        getCopts(
             conlyopts,
             copts,
             cppConfiguration,
             cxxopts,
-            fdoContext,
-            featureConfiguration,
-            generateNoPicAction,
-            generatePicAction,
-            label,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
             semantics,
-            variablesExtensions,
-            sourceLabel,
-            outputName,
-            result,
-            sourceArtifact,
-            builder,
-            // TODO(plf): Continue removing CLIF logic from C++. Follow up changes would include
-            // refactoring CppSource.Type and ArtifactCategory to be classes instead of enums
-            // that could be instantiated with arbitrary values.
-            source.getType() == CppSource.Type.CLIF_INPUT_PROTO
-                ? ArtifactCategory.CLIF_OUTPUT_PROTO
-                : ArtifactCategory.OBJECT_FILE,
-            ccCompilationContext.getCppModuleMap(),
-            /* addObject= */ true,
-            isCodeCoverageEnabled,
-            // The source action does not generate dwo when it has bitcode
-            // output (since it isn't generating a native object with debug
-            // info). In that case the LtoBackendAction will generate the dwo.
-            CcToolchainProvider.shouldCreatePerObjectDebugInfo(
-                featureConfiguration, cppConfiguration),
-            bitcodeOutput);
-      } else {
-        switch (source.getType()) {
-          case HEADER:
-            Artifact headerTokenFile =
-                createCompileActionTemplate(
-                    actionConstructionContext,
-                    ccCompilationContext,
-                    ccToolchain,
-                    compilationUnitSources,
-                    configuration,
-                    conlyopts,
-                    copts,
-                    cppConfiguration,
-                    cxxopts,
-                    fdoContext,
-                    featureConfiguration,
-                    label,
-                    cachedCcToolchainVariables,
-                    ruleErrorConsumer,
-                    semantics,
-                    variablesExtensions,
-                    source,
-                    outputName,
-                    builder,
-                    result,
-                    ImmutableList.of(
-                        ArtifactCategory.GENERATED_HEADER, ArtifactCategory.PROCESSED_HEADER),
-                    // If we generate pic actions, we prefer the header actions to use the pic mode.
-                    generatePicAction,
-                    bitcodeOutput);
-            result.addHeaderTokenFile(headerTokenFile);
-            break;
-          case SOURCE:
-            if (generateNoPicAction) {
-              Artifact objectFile =
-                  createCompileActionTemplate(
-                      actionConstructionContext,
-                      ccCompilationContext,
-                      ccToolchain,
-                      compilationUnitSources,
-                      configuration,
-                      conlyopts,
-                      copts,
-                      cppConfiguration,
-                      cxxopts,
-                      fdoContext,
-                      featureConfiguration,
-                      label,
-                      cachedCcToolchainVariables,
-                      ruleErrorConsumer,
-                      semantics,
-                      variablesExtensions,
-                      source,
-                      outputName,
-                      builder,
-                      result,
-                      ImmutableList.of(ArtifactCategory.OBJECT_FILE),
-                      /* usePic= */ false,
-                      featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO));
-              result.addObjectFile(objectFile);
-            }
+            ccCompileActionBuilder.getSourceFile(),
+            sourceLabel),
+        ccCompileActionBuilder.getDotdFile(),
+        ccCompileActionBuilder.getDiagnosticsFile(),
+        usePic,
+        featureConfiguration,
+        cppModuleMap,
+        ccCompilationContext.getDirectModuleMaps(),
+        additionalBuildVariables);
+    if (needsFdoBuildVariables) {
+      buildVariables.addAllStringVariables(fdoBuildVariables);
+    }
+    return buildVariables.build();
+  }
 
-            if (generatePicAction) {
-              Artifact picObjectFile =
-                  createCompileActionTemplate(
-                      actionConstructionContext,
-                      ccCompilationContext,
-                      ccToolchain,
-                      compilationUnitSources,
-                      configuration,
-                      conlyopts,
-                      copts,
-                      cppConfiguration,
-                      cxxopts,
-                      fdoContext,
-                      featureConfiguration,
-                      label,
-                      cachedCcToolchainVariables,
-                      ruleErrorConsumer,
-                      semantics,
-                      variablesExtensions,
-                      source,
-                      outputName,
-                      builder,
-                      result,
-                      ImmutableList.of(ArtifactCategory.PIC_OBJECT_FILE),
-                      /* usePic= */ true,
-                      featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO));
-              result.addPicObjectFile(picObjectFile);
-            }
-            break;
-          default:
-            throw new IllegalStateException(
-                "Encountered invalid source types when creating CppCompileActionTemplates");
+  // FDO related methods:
+
+  /**
+   * Configures a compile action builder by setting up command line options and auxiliary inputs
+   * according to the FDO configuration. This method does nothing If FDO is disabled.
+   */
+  private static ImmutableMap<String, String> setupFdoBuildVariables(
+      CcToolchainProvider ccToolchain,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      String fdoInstrument,
+      String csFdoInstrument)
+      throws EvalException {
+    ImmutableMap.Builder<String, String> variablesBuilder = ImmutableMap.builder();
+    if (featureConfiguration.isEnabled(CppRuleClasses.FDO_INSTRUMENT)) {
+      variablesBuilder.put(
+          CompileBuildVariables.FDO_INSTRUMENT_PATH.getVariableName(), fdoInstrument);
+    }
+    if (featureConfiguration.isEnabled(CppRuleClasses.CS_FDO_INSTRUMENT)) {
+      variablesBuilder.put(
+          CompileBuildVariables.CS_FDO_INSTRUMENT_PATH.getVariableName(), csFdoInstrument);
+    }
+
+    // FDO is disabled -> do nothing.
+    Preconditions.checkNotNull(fdoContext);
+    if (!fdoContext.hasArtifacts()) {
+      return variablesBuilder.buildOrThrow();
+    }
+
+    if (fdoContext.getPrefetchHintsArtifact() != null) {
+      variablesBuilder.put(
+          CompileBuildVariables.FDO_PREFETCH_HINTS_PATH.getVariableName(),
+          fdoContext.getPrefetchHintsArtifact().getExecPathString());
+    }
+
+    if (shouldPassPropellerProfiles(ccToolchain, fdoContext, featureConfiguration)) {
+      if (fdoContext.getPropellerOptimizeInputFile().getCcArtifact() != null) {
+        variablesBuilder.put(
+            CompileBuildVariables.PROPELLER_OPTIMIZE_CC_PATH.getVariableName(),
+            fdoContext.getPropellerOptimizeInputFile().getCcArtifact().getExecPathString());
+      }
+
+      if (fdoContext.getPropellerOptimizeInputFile().getLdArtifact() != null) {
+        variablesBuilder.put(
+            CompileBuildVariables.PROPELLER_OPTIMIZE_LD_PATH.getVariableName(),
+            fdoContext.getPropellerOptimizeInputFile().getLdArtifact().getExecPathString());
+      }
+    }
+
+    if (fdoContext.getMemProfProfileArtifact() != null) {
+      variablesBuilder.put(
+          CompileBuildVariables.MEMPROF_PROFILE_PATH.getVariableName(),
+          fdoContext.getMemProfProfileArtifact().getExecPathString());
+    }
+
+    FdoContext.BranchFdoProfile branchFdoProfile = fdoContext.getBranchFdoProfile();
+    // Optimization phase
+    if (branchFdoProfile != null) {
+      if (!auxiliaryFdoInputs.isEmpty()) {
+        if (featureConfiguration.isEnabled(CppRuleClasses.AUTOFDO)
+            || featureConfiguration.isEnabled(CppRuleClasses.XBINARYFDO)) {
+          variablesBuilder.put(
+              CompileBuildVariables.FDO_PROFILE_PATH.getVariableName(),
+              branchFdoProfile.getProfileArtifact().getExecPathString());
+        }
+        if (featureConfiguration.isEnabled(CppRuleClasses.FDO_OPTIMIZE)) {
+          if (branchFdoProfile.isLlvmFdo() || branchFdoProfile.isLlvmCSFdo()) {
+            variablesBuilder.put(
+                CompileBuildVariables.FDO_PROFILE_PATH.getVariableName(),
+                branchFdoProfile.getProfileArtifact().getExecPathString());
+          }
         }
       }
     }
-    for (CppSource source : compilationUnitSources.values()) {
-      Artifact artifact = source.getSource();
-      if (source.getType() != CppSource.Type.HEADER || artifact.isTreeArtifact()) {
-        // These are already handled above.
-        continue;
-      }
-      if (featureConfiguration.isEnabled(CppRuleClasses.VALIDATES_LAYERING_CHECK_IN_TEXTUAL_HDRS)
-          && compiledBasenames.contains(
-              Files.getNameWithoutExtension(artifact.getExecPathString()))) {
-        continue;
-      }
-      CppCompileActionBuilder builder =
-          initializeCompileAction(
-              actionConstructionContext,
-              ccCompilationContext,
-              ccToolchain,
-              configuration,
-              coptsFilter,
-              executionInfo,
-              featureConfiguration,
-              semantics,
-              artifact);
-      builder
-          .addMandatoryInputs(additionalCompilationInputs)
-          .addAdditionalIncludeScanningRoots(additionalIncludeScanningRoots);
+    return variablesBuilder.buildOrThrow();
+  }
 
-      String outputName = outputNameMap.get(artifact);
-      createHeaderAction(
-          actionConstructionContext,
-          ccCompilationContext,
-          ccToolchain,
-          compilationUnitSources,
-          configuration,
-          conlyopts,
-          copts,
-          cppConfiguration,
-          cxxopts,
-          fdoContext,
-          featureConfiguration,
-          generatePicAction,
-          label,
-          cachedCcToolchainVariables,
-          ruleErrorConsumer,
-          semantics,
-          variablesExtensions,
-          source.getLabel(),
-          outputName,
-          result,
-          builder);
+  /** Returns whether Propeller profiles should be passed to a compile action. */
+  private static boolean shouldPassPropellerProfiles(
+      CcToolchainProvider ccToolchain,
+      FdoContext fdoContext,
+      FeatureConfiguration featureConfiguration)
+      throws EvalException {
+    if (ccToolchain.isToolConfiguration()) {
+      // Propeller doesn't make much sense for host builds.
+      return false;
     }
 
-    return result.build();
+    if (fdoContext.getPropellerOptimizeInputFile() == null) {
+      // No Propeller profiles to pass.
+      return false;
+    }
+    // Don't pass Propeller input files if they have no effect (i.e. for ThinLTO).
+    return !featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO)
+        || featureConfiguration.isEnabled(
+            CppRuleClasses.PROPELLER_OPTIMIZE_THINLTO_COMPILE_ACTIONS);
   }
+
+  /** Returns the auxiliary files that need to be added to the {@link CppCompileAction}. */
+  private static NestedSet<Artifact> getAuxiliaryFdoInputs(
+      CcToolchainProvider ccToolchain,
+      FdoContext fdoContext,
+      FeatureConfiguration featureConfiguration)
+      throws EvalException {
+    NestedSetBuilder<Artifact> auxiliaryInputs = NestedSetBuilder.stableOrder();
+
+    if (fdoContext.getPrefetchHintsArtifact() != null) {
+      auxiliaryInputs.add(fdoContext.getPrefetchHintsArtifact());
+    }
+    if (shouldPassPropellerProfiles(ccToolchain, fdoContext, featureConfiguration)) {
+      if (fdoContext.getPropellerOptimizeInputFile().getCcArtifact() != null) {
+        auxiliaryInputs.add(fdoContext.getPropellerOptimizeInputFile().getCcArtifact());
+      }
+      if (fdoContext.getPropellerOptimizeInputFile().getLdArtifact() != null) {
+        auxiliaryInputs.add(fdoContext.getPropellerOptimizeInputFile().getLdArtifact());
+      }
+    }
+    if (fdoContext.getMemProfProfileArtifact() != null) {
+      auxiliaryInputs.add(fdoContext.getMemProfProfileArtifact());
+    }
+    FdoContext.BranchFdoProfile branchFdoProfile = fdoContext.getBranchFdoProfile();
+    // If --fdo_optimize was not specified, we don't have any additional inputs.
+    if (branchFdoProfile != null) {
+      auxiliaryInputs.add(branchFdoProfile.getProfileArtifact());
+    }
+
+    return auxiliaryInputs.build();
+  }
+
+  // Methods creating CppCompileActionBuilder:
+
+  /**
+   * Returns a {@code CppCompileActionBuilder} with the common fields for a C++ compile action being
+   * initialized.
+   */
+  private static CppCompileActionBuilder createCppCompileActionBuilder(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      CoptsFilter coptsFilter,
+      ImmutableMap<String, String> executionInfo,
+      FeatureConfiguration featureConfiguration,
+      CppSemantics semantics,
+      Artifact sourceArtifact) {
+    return new CppCompileActionBuilder(
+            actionConstructionContext, ccToolchain, configuration, semantics)
+        .setSourceFile(sourceArtifact)
+        .setCcCompilationContext(ccCompilationContext)
+        .setCoptsFilter(coptsFilter)
+        .setFeatureConfiguration(featureConfiguration)
+        .addExecutionInfo(executionInfo);
+  }
+
+  /**
+   * Returns a {@code CppCompileActionBuilder} with the common fields for a C++ compile action being
+   * initialized, plus the mandatoryInputs and additionalIncludeScanningRoots fields
+   */
+  private static CppCompileActionBuilder createCppCompileActionBuilderWithInputs(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      CoptsFilter coptsFilter,
+      ImmutableMap<String, String> executionInfo,
+      FeatureConfiguration featureConfiguration,
+      CppSemantics semantics,
+      Artifact sourceArtifact,
+      List<Artifact> additionalCompilationInputs,
+      List<Artifact> additionalIncludeScanningRoots) {
+    CppCompileActionBuilder builder =
+        createCppCompileActionBuilder(
+            actionConstructionContext,
+            ccCompilationContext,
+            ccToolchain,
+            configuration,
+            coptsFilter,
+            executionInfo,
+            featureConfiguration,
+            semantics,
+            sourceArtifact);
+
+    builder
+        .addMandatoryInputs(additionalCompilationInputs)
+        .addAdditionalIncludeScanningRoots(additionalIncludeScanningRoots);
+    return builder;
+  }
+
+  // Methods creating actions:
 
   private static Artifact createCompileActionTemplate(
       ActionConstructionContext actionConstructionContext,
       CcCompilationContext ccCompilationContext,
       CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
       BuildConfigurationValue configuration,
       ImmutableList<String> conlyopts,
       ImmutableList<String> copts,
       CppConfiguration cppConfiguration,
       ImmutableList<String> cxxopts,
       FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
       FeatureConfiguration featureConfiguration,
       Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
       RuleErrorConsumer ruleErrorConsumer,
       CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
       CppSource source,
       String outputName,
       CppCompileActionBuilder builder,
@@ -1385,7 +870,7 @@ public final class CcStaticCompilationHelper {
       ImmutableList<ArtifactCategory> outputCategories,
       boolean usePic,
       boolean bitcodeOutput)
-      throws RuleErrorException, EvalException, InterruptedException {
+      throws RuleErrorException, EvalException {
     if (usePic) {
       builder = new CppCompileActionBuilder(builder).setPicMode(true);
     }
@@ -1396,24 +881,22 @@ public final class CcStaticCompilationHelper {
     // Dotd and dia file outputs are specified in the execution phase.
     builder.setOutputs(outputFiles, /* dotdFile= */ null, /* diagnosticsFile= */ null);
     builder.setVariables(
-        setupCompileBuildVariables(
+        setupSpecificCompileBuildVariables(
+            commonToolchainVariables,
             ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
             conlyopts,
             copts,
             cppConfiguration,
             cxxopts,
             fdoContext,
+            auxiliaryFdoInputs,
             featureConfiguration,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
             semantics,
-            variablesExtensions,
             builder,
             /* sourceLabel= */ null,
             usePic,
             /* needsFdoBuildVariables= */ false,
+            fdoBuildVariables,
             ccCompilationContext.getCppModuleMap(),
             /* enableCoverage= */ false,
             /* gcnoFile= */ null,
@@ -1460,7 +943,8 @@ public final class CcStaticCompilationHelper {
     ActionOwner actionOwner = null;
     if (actionConstructionContext instanceof RuleContext ruleContext
         && ruleContext.useAutoExecGroups()) {
-      actionOwner = actionConstructionContext.getActionOwner(semantics.getCppToolchainType());
+      actionOwner =
+          actionConstructionContext.getActionOwner(semantics.getCppToolchainType().toString());
     }
     try {
       CppCompileActionTemplate actionTemplate =
@@ -1480,6 +964,690 @@ public final class CcStaticCompilationHelper {
     }
 
     return outputFiles;
+  }
+
+  private static void createModuleCodegenAction(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CoptsFilter coptsFilter,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      ImmutableMap<String, String> executionInfo,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      boolean isCodeCoverageEnabled,
+      Label label,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      CcCompilationOutputs.Builder result,
+      Label sourceLabel,
+      Artifact module)
+      throws RuleErrorException, EvalException, InterruptedException {
+    String outputName = module.getRootRelativePath().getBaseName();
+
+    // TODO(djasper): Make this less hacky after refactoring how the PIC/noPIC actions are created.
+    boolean pic = module.getFilename().contains(".pic.");
+
+    CppCompileActionBuilder builder =
+        createCppCompileActionBuilder(
+            actionConstructionContext,
+            ccCompilationContext,
+            ccToolchain,
+            configuration,
+            coptsFilter,
+            executionInfo,
+            featureConfiguration,
+            semantics,
+            module);
+    builder.setPicMode(pic);
+    builder.setOutputs(
+        actionConstructionContext,
+        ruleErrorConsumer,
+        label,
+        ArtifactCategory.OBJECT_FILE,
+        outputName);
+    PathFragment ccRelativeName = module.getRootRelativePath();
+
+    String gcnoFileName =
+        CppHelper.getArtifactNameForCategory(
+            ccToolchain, ArtifactCategory.COVERAGE_DATA_FILE, outputName);
+    // TODO(djasper): This is now duplicated. Refactor the various create..Action functions.
+    Artifact gcnoFile =
+        isCodeCoverageEnabled && !cppConfiguration.useLLVMCoverageMapFormat()
+            ? CppHelper.getCompileOutputArtifact(
+                actionConstructionContext, label, gcnoFileName, configuration)
+            : null;
+
+    boolean generateDwo =
+        CcToolchainProvider.shouldCreatePerObjectDebugInfo(featureConfiguration, cppConfiguration);
+    Artifact dwoFile =
+        generateDwo
+            ? getDwoFile(actionConstructionContext, configuration, builder.getOutputFile())
+            : null;
+    // TODO(tejohnson): Add support for ThinLTO if needed.
+    boolean bitcodeOutput =
+        featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO)
+            && CppFileTypes.LTO_SOURCE.matches(module.getFilename());
+    Preconditions.checkState(!bitcodeOutput);
+
+    builder.setVariables(
+        setupSpecificCompileBuildVariables(
+            commonToolchainVariables,
+            ccCompilationContext,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            semantics,
+            builder,
+            sourceLabel,
+            /* usePic= */ pic,
+            /* needsFdoBuildVariables= */ ccRelativeName != null,
+            fdoBuildVariables,
+            ccCompilationContext.getCppModuleMap(),
+            isCodeCoverageEnabled,
+            gcnoFile,
+            generateDwo,
+            dwoFile,
+            /* ltoIndexingFile= */ null,
+            /* additionalBuildVariables= */ ImmutableMap.of()));
+
+    builder.setGcnoFile(gcnoFile);
+    builder.setDwoFile(dwoFile);
+
+    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, builder);
+    CppCompileAction compileAction = builder.buildOrThrowRuleError(ruleErrorConsumer);
+    actionConstructionContext.registerAction(compileAction);
+    Artifact objectFile = compileAction.getPrimaryOutput();
+    if (pic) {
+      result.addPicObjectFile(objectFile);
+    } else {
+      result.addObjectFile(objectFile);
+    }
+  }
+
+  private static void createParseHeaderAction(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      boolean generatePicAction,
+      Label label,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      Label sourceLabel,
+      String outputName,
+      CcCompilationOutputs.Builder result,
+      CppCompileActionBuilder builder)
+      throws RuleErrorException, EvalException, InterruptedException {
+    String outputNameBase =
+        CppHelper.getArtifactNameForCategory(
+            ccToolchain, ArtifactCategory.GENERATED_HEADER, outputName);
+
+    builder
+        .setOutputs(
+            actionConstructionContext,
+            ruleErrorConsumer,
+            label,
+            ArtifactCategory.PROCESSED_HEADER,
+            outputNameBase)
+        // If we generate pic actions, we prefer the header actions to use the pic artifacts.
+        .setPicMode(generatePicAction);
+    builder.setVariables(
+        setupSpecificCompileBuildVariables(
+            commonToolchainVariables,
+            ccCompilationContext,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            semantics,
+            builder,
+            sourceLabel,
+            generatePicAction,
+            /* needsFdoBuildVariables= */ false,
+            fdoBuildVariables,
+            ccCompilationContext.getCppModuleMap(),
+            /* enableCoverage= */ false,
+            /* gcnoFile= */ null,
+            /* isUsingFission= */ false,
+            /* dwoFile= */ null,
+            /* ltoIndexingFile= */ null,
+            /* additionalBuildVariables= */ ImmutableMap.of()));
+    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, builder);
+    CppCompileAction compileAction = builder.buildOrThrowRuleError(ruleErrorConsumer);
+    actionConstructionContext.registerAction(compileAction);
+    Artifact tokenFile = compileAction.getPrimaryOutput();
+    result.addHeaderTokenFile(tokenFile);
+  }
+
+  private static ImmutableList<Artifact> createModuleAction(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CoptsFilter coptsFilter,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      ImmutableMap<String, String> executionInfo,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      boolean generateNoPicAction,
+      boolean generatePicAction,
+      Label label,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      CcCompilationOutputs.Builder result,
+      CppModuleMap cppModuleMap)
+      throws RuleErrorException, EvalException, InterruptedException {
+    Artifact moduleMapArtifact = cppModuleMap.getArtifact();
+    CppCompileActionBuilder builder =
+        createCppCompileActionBuilder(
+            actionConstructionContext,
+            ccCompilationContext,
+            ccToolchain,
+            configuration,
+            coptsFilter,
+            executionInfo,
+            featureConfiguration,
+            semantics,
+            moduleMapArtifact);
+
+    Label sourceLabel = Label.parseCanonicalUnchecked(cppModuleMap.getName());
+
+    // A header module compile action is just like a normal compile action, but:
+    // - the compiled source file is the module map
+    // - it creates a header module (.pcm file).
+    return createCompileSourceActionFromBuilder(
+        actionConstructionContext,
+        ccCompilationContext,
+        ccToolchain,
+        configuration,
+        conlyopts,
+        copts,
+        cppConfiguration,
+        cxxopts,
+        fdoContext,
+        auxiliaryFdoInputs,
+        featureConfiguration,
+        generateNoPicAction,
+        generatePicAction,
+        label,
+        commonToolchainVariables,
+        fdoBuildVariables,
+        ruleErrorConsumer,
+        semantics,
+        sourceLabel,
+        Path.of(sourceLabel.getName()).getFileName().toString(),
+        result,
+        moduleMapArtifact,
+        builder,
+        ArtifactCategory.CPP_MODULE,
+        cppModuleMap,
+        /* addObject= */ false,
+        /* enableCoverage= */ false,
+        /* generateDwo= */ false,
+        /* bitcodeOutput= */ false);
+  }
+
+  @CanIgnoreReturnValue
+  private static ImmutableList<Artifact> createCompileSourceActionFromBuilder(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      boolean generateNoPicAction,
+      boolean generatePicAction,
+      Label label,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      Label sourceLabel,
+      String outputName,
+      CcCompilationOutputs.Builder result,
+      Artifact sourceArtifact,
+      CppCompileActionBuilder builder,
+      ArtifactCategory outputCategory,
+      CppModuleMap cppModuleMap,
+      boolean addObject,
+      boolean enableCoverage,
+      boolean generateDwo,
+      boolean bitcodeOutput)
+      throws RuleErrorException, EvalException, InterruptedException {
+    ImmutableList.Builder<Artifact> directOutputs = new ImmutableList.Builder<>();
+    PathFragment ccRelativeName = sourceArtifact.getRootRelativePath();
+
+    // Create PIC compile actions (same as no-PIC, but use -fPIC and
+    // generate .pic.o, .pic.d, .pic.gcno instead of .o, .d, .gcno.)
+    if (generatePicAction) {
+      CppCompileActionBuilder picBuilder = new CppCompileActionBuilder(builder);
+      picBuilder.setPicMode(true);
+      Artifact picOutputFile =
+          createPicOrNoPicCompileSourceAction(
+              actionConstructionContext,
+              ccCompilationContext,
+              ccToolchain,
+              configuration,
+              conlyopts,
+              copts,
+              cppConfiguration,
+              cxxopts,
+              fdoContext,
+              auxiliaryFdoInputs,
+              featureConfiguration,
+              label,
+              commonToolchainVariables,
+              fdoBuildVariables,
+              ruleErrorConsumer,
+              semantics,
+              sourceLabel,
+              outputName,
+              result,
+              sourceArtifact,
+              picBuilder,
+              outputCategory,
+              cppModuleMap,
+              addObject,
+              enableCoverage,
+              generateDwo,
+              bitcodeOutput,
+              ccRelativeName,
+              /* usePic= */ true,
+              /* additionalBuildVariables= */ ImmutableMap.of());
+      directOutputs.add(picOutputFile);
+      if (outputCategory == ArtifactCategory.CPP_MODULE) {
+        result.addModuleFile(picOutputFile);
+      }
+    }
+
+    if (generateNoPicAction) {
+      Artifact noPicOutputFile =
+          createPicOrNoPicCompileSourceAction(
+              actionConstructionContext,
+              ccCompilationContext,
+              ccToolchain,
+              configuration,
+              conlyopts,
+              copts,
+              cppConfiguration,
+              cxxopts,
+              fdoContext,
+              auxiliaryFdoInputs,
+              featureConfiguration,
+              label,
+              commonToolchainVariables,
+              fdoBuildVariables,
+              ruleErrorConsumer,
+              semantics,
+              sourceLabel,
+              outputName,
+              result,
+              sourceArtifact,
+              builder,
+              outputCategory,
+              cppModuleMap,
+              addObject,
+              enableCoverage,
+              generateDwo,
+              bitcodeOutput,
+              ccRelativeName,
+              /* usePic= */ false,
+              /* additionalBuildVariables= */ ImmutableMap.of());
+      directOutputs.add(noPicOutputFile);
+      if (outputCategory == ArtifactCategory.CPP_MODULE) {
+        result.addModuleFile(noPicOutputFile);
+      }
+    }
+    return directOutputs.build();
+  }
+
+  private static Artifact createPicOrNoPicCompileSourceAction(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      Label label,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      Label sourceLabel,
+      String outputName,
+      CcCompilationOutputs.Builder result,
+      Artifact sourceArtifact,
+      CppCompileActionBuilder builder,
+      ArtifactCategory outputCategory,
+      CppModuleMap cppModuleMap,
+      boolean addObject,
+      boolean enableCoverage,
+      boolean generateDwo,
+      boolean bitcodeOutput,
+      PathFragment ccRelativeName,
+      boolean usePic,
+      ImmutableMap<String, String> additionalBuildVariables)
+      throws RuleErrorException, EvalException, InterruptedException {
+    builder.setOutputs(
+        actionConstructionContext,
+        ruleErrorConsumer,
+        label,
+        outputCategory,
+        getOutputNameBaseWith(ccToolchain, outputName, usePic));
+    String gcnoFileName =
+        CppHelper.getArtifactNameForCategory(
+            ccToolchain,
+            ArtifactCategory.COVERAGE_DATA_FILE,
+            getOutputNameBaseWith(ccToolchain, outputName, usePic));
+
+    Artifact gcnoFile =
+        enableCoverage && !cppConfiguration.useLLVMCoverageMapFormat()
+            ? CppHelper.getCompileOutputArtifact(
+                actionConstructionContext, label, gcnoFileName, configuration)
+            : null;
+
+    Artifact dwoFile =
+        generateDwo && !bitcodeOutput
+            ? getDwoFile(actionConstructionContext, configuration, builder.getOutputFile())
+            : null;
+    Artifact ltoIndexingFile =
+        bitcodeOutput
+            ? getLtoIndexingFile(
+                actionConstructionContext,
+                configuration,
+                featureConfiguration,
+                builder.getOutputFile())
+            : null;
+
+    builder.setVariables(
+        setupSpecificCompileBuildVariables(
+            commonToolchainVariables,
+            ccCompilationContext,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            semantics,
+            builder,
+            sourceLabel,
+            usePic,
+            /* needsFdoBuildVariables= */ ccRelativeName != null && addObject,
+            fdoBuildVariables,
+            cppModuleMap,
+            enableCoverage,
+            gcnoFile,
+            generateDwo,
+            dwoFile,
+            ltoIndexingFile,
+            additionalBuildVariables));
+
+    result.addTemps(
+        createTempsActions(
+            actionConstructionContext,
+            ccCompilationContext,
+            ccToolchain,
+            configuration,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            label,
+            commonToolchainVariables,
+            fdoBuildVariables,
+            ruleErrorConsumer,
+            semantics,
+            sourceArtifact,
+            sourceLabel,
+            outputName,
+            builder,
+            usePic,
+            ccRelativeName));
+
+    builder.setGcnoFile(gcnoFile);
+    builder.setDwoFile(dwoFile);
+    builder.setLtoIndexingFile(ltoIndexingFile);
+
+    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, builder);
+    CppCompileAction compileAction = builder.buildOrThrowRuleError(ruleErrorConsumer);
+    actionConstructionContext.registerAction(compileAction);
+    Artifact objectFile = compileAction.getPrimaryOutput();
+    if (usePic) {
+      if (addObject) {
+        result.addPicObjectFile(objectFile);
+      }
+      if (dwoFile != null) {
+        // Exec configuration targets don't produce .dwo files.
+        result.addPicDwoFile(dwoFile);
+      }
+      if (gcnoFile != null) {
+        result.addPicGcnoFile(gcnoFile);
+      }
+    } else {
+      if (addObject) {
+        result.addObjectFile(objectFile);
+      }
+      if (dwoFile != null) {
+        // Exec configuration targets don't produce .dwo files.
+        result.addDwoFile(dwoFile);
+      }
+      if (gcnoFile != null) {
+        result.addGcnoFile(gcnoFile);
+      }
+    }
+    if (addObject && bitcodeOutput) {
+      result.addLtoBitcodeFile(
+          objectFile,
+          ltoIndexingFile,
+          getCopts(
+              conlyopts, copts, cppConfiguration, cxxopts, semantics, sourceArtifact, sourceLabel));
+    }
+    return objectFile;
+  }
+
+  /** Create the actions for "--save_temps". */
+  private static ImmutableList<Artifact> createTempsActions(
+      ActionConstructionContext actionConstructionContext,
+      CcCompilationContext ccCompilationContext,
+      CcToolchainProvider ccToolchain,
+      BuildConfigurationValue configuration,
+      ImmutableList<String> conlyopts,
+      ImmutableList<String> copts,
+      CppConfiguration cppConfiguration,
+      ImmutableList<String> cxxopts,
+      FdoContext fdoContext,
+      NestedSet<Artifact> auxiliaryFdoInputs,
+      FeatureConfiguration featureConfiguration,
+      Label label,
+      CcToolchainVariables commonToolchainVariables,
+      ImmutableMap<String, String> fdoBuildVariables,
+      RuleErrorConsumer ruleErrorConsumer,
+      CppSemantics semantics,
+      Artifact source,
+      Label sourceLabel,
+      String outputName,
+      CppCompileActionBuilder builder,
+      boolean usePic,
+      PathFragment ccRelativeName)
+      throws RuleErrorException, EvalException, InterruptedException {
+    if (!cppConfiguration.getSaveTemps()) {
+      return ImmutableList.of();
+    }
+
+    String path = source.getFilename();
+    boolean isCFile = CppFileTypes.C_SOURCE.matches(path);
+    boolean isCppFile = CppFileTypes.CPP_SOURCE.matches(path);
+    boolean isObjcFile = CppFileTypes.OBJC_SOURCE.matches(path);
+    boolean isObjcppFile = CppFileTypes.OBJCPP_SOURCE.matches(path);
+
+    if (!isCFile && !isCppFile && !isObjcFile && !isObjcppFile) {
+      return ImmutableList.of();
+    }
+
+    ArtifactCategory category =
+        isCFile ? ArtifactCategory.PREPROCESSED_C_SOURCE : ArtifactCategory.PREPROCESSED_CPP_SOURCE;
+
+    String outputArtifactNameBase = getOutputNameBaseWith(ccToolchain, outputName, usePic);
+
+    CppCompileActionBuilder dBuilder = new CppCompileActionBuilder(builder);
+    dBuilder.setOutputs(
+        actionConstructionContext, ruleErrorConsumer, label, category, outputArtifactNameBase);
+    dBuilder.setVariables(
+        setupSpecificCompileBuildVariables(
+            commonToolchainVariables,
+            ccCompilationContext,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            semantics,
+            dBuilder,
+            sourceLabel,
+            usePic,
+            /* needsFdoBuildVariables= */ ccRelativeName != null,
+            fdoBuildVariables,
+            ccCompilationContext.getCppModuleMap(),
+            /* enableCoverage= */ false,
+            /* gcnoFile= */ null,
+            /* isUsingFission= */ false,
+            /* dwoFile= */ null,
+            /* ltoIndexingFile= */ null,
+            ImmutableMap.of(
+                CompileBuildVariables.OUTPUT_PREPROCESS_FILE.getVariableName(),
+                dBuilder.getRealOutputFilePath().getSafePathString())));
+    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, dBuilder);
+    CppCompileAction dAction = dBuilder.buildOrThrowRuleError(ruleErrorConsumer);
+    actionConstructionContext.registerAction(dAction);
+
+    CppCompileActionBuilder sdBuilder = new CppCompileActionBuilder(builder);
+    sdBuilder.setOutputs(
+        actionConstructionContext,
+        ruleErrorConsumer,
+        label,
+        ArtifactCategory.GENERATED_ASSEMBLY,
+        outputArtifactNameBase);
+    sdBuilder.setVariables(
+        setupSpecificCompileBuildVariables(
+            commonToolchainVariables,
+            ccCompilationContext,
+            conlyopts,
+            copts,
+            cppConfiguration,
+            cxxopts,
+            fdoContext,
+            auxiliaryFdoInputs,
+            featureConfiguration,
+            semantics,
+            sdBuilder,
+            sourceLabel,
+            usePic,
+            /* needsFdoBuildVariables= */ ccRelativeName != null,
+            fdoBuildVariables,
+            ccCompilationContext.getCppModuleMap(),
+            /* enableCoverage= */ false,
+            /* gcnoFile= */ null,
+            /* isUsingFission= */ false,
+            /* dwoFile= */ null,
+            /* ltoIndexingFile= */ null,
+            ImmutableMap.of(
+                CompileBuildVariables.OUTPUT_ASSEMBLY_FILE.getVariableName(),
+                sdBuilder.getRealOutputFilePath().getSafePathString())));
+    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, sdBuilder);
+    CppCompileAction sdAction = sdBuilder.buildOrThrowRuleError(ruleErrorConsumer);
+    actionConstructionContext.registerAction(sdAction);
+
+    return ImmutableList.of(dAction.getPrimaryOutput(), sdAction.getPrimaryOutput());
+  }
+
+  // Helper methods used when creating actions:
+
+  private static String getOutputNameBaseWith(
+      CcToolchainProvider ccToolchain, String base, boolean usePic) throws RuleErrorException {
+    return usePic
+        ? CppHelper.getArtifactNameForCategory(ccToolchain, ArtifactCategory.PIC_FILE, base)
+        : base;
+  }
+
+  private static ImmutableList<String> collectPerFileCopts(
+      CppConfiguration cppConfiguration, Artifact sourceFile, Label sourceLabel) {
+    return cppConfiguration.getPerFileCopts().stream()
+        .filter(
+            perLabelOptions ->
+                (sourceLabel != null && perLabelOptions.isIncluded(sourceLabel))
+                    || perLabelOptions.isIncluded(sourceFile))
+        .map(PerLabelOptions::getOptions)
+        .flatMap(options -> options.stream())
+        .collect(ImmutableList.toImmutableList());
+  }
+
+  private static Artifact getDwoFile(
+      ActionConstructionContext actionConstructionContext,
+      BuildConfigurationValue configuration,
+      Artifact outputFile) {
+    return actionConstructionContext.getRelatedArtifact(
+        outputFile.getOutputDirRelativePath(configuration.isSiblingRepositoryLayout()), ".dwo");
+  }
+
+  @Nullable
+  private static Artifact getLtoIndexingFile(
+      ActionConstructionContext actionConstructionContext,
+      BuildConfigurationValue configuration,
+      FeatureConfiguration featureConfiguration,
+      Artifact outputFile) {
+    if (featureConfiguration.isEnabled(CppRuleClasses.NO_USE_LTO_INDEXING_BITCODE_FILE)) {
+      return null;
+    }
+    String ext = Iterables.getOnlyElement(CppFileTypes.LTO_INDEXING_OBJECT_FILE.getExtensions());
+    return actionConstructionContext.getRelatedArtifact(
+        outputFile.getOutputDirRelativePath(configuration.isSiblingRepositoryLayout()), ext);
   }
 
   /**
@@ -1543,885 +1711,5 @@ public final class CcStaticCompilationHelper {
       coptsList.addAll(collectPerFileCopts(cppConfiguration, sourceFile, sourceLabel));
     }
     return coptsList.build();
-  }
-
-  private static CcToolchainVariables setupCompileBuildVariables(
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      CppCompileActionBuilder builder,
-      Label sourceLabel,
-      boolean usePic,
-      boolean needsFdoBuildVariables,
-      CppModuleMap cppModuleMap,
-      boolean enableCoverage,
-      Artifact gcnoFile,
-      boolean isUsingFission,
-      Artifact dwoFile,
-      Artifact ltoIndexingFile,
-      ImmutableMap<String, String> additionalBuildVariables)
-      throws RuleErrorException, EvalException, InterruptedException {
-    Artifact sourceFile = builder.getSourceFile();
-    if (needsFdoBuildVariables && fdoContext.hasArtifacts()) {
-      // This modifies the passed-in builder, which is a surprising side-effect, and makes it unsafe
-      // to call this method multiple times for the same builder.
-      builder.addMandatoryInputs(
-          getAuxiliaryFdoInputs(ccToolchain, fdoContext, featureConfiguration));
-    }
-    CcToolchainVariables parent =
-        needsFdoBuildVariables
-            ? cachedCcToolchainVariables.prebuiltParentWithFdo
-            : cachedCcToolchainVariables.prebuiltParent;
-    // We use the prebuilt parent variables if and only if the passed in cppModuleMap is the
-    // identical to the one returned from ccCompilationContext.getCppModuleMap(): there is exactly
-    // one caller which passes in any other value (the verification module map), so this should be
-    // fine for now.
-    boolean usePrebuiltParent =
-        cppModuleMap == ccCompilationContext.getCppModuleMap()
-            // Only use the prebuilt parent if there are enough sources to make it worthwhile. The
-            // threshold was chosen by looking at a heap dump.
-            && (compilationUnitSources.size() > 1);
-    CcToolchainVariables.Builder buildVariables;
-    if (parent != null && usePrebuiltParent) {
-      // If we have a pre-built parent and we are allowed to use it, then do so.
-      buildVariables = CcToolchainVariables.builder(parent);
-    } else {
-      Map<String, String> genericAdditionalBuildVariables = new LinkedHashMap<>();
-      if (needsFdoBuildVariables) {
-        configureFdoBuildVariables(
-            ccToolchain,
-            fdoContext,
-            featureConfiguration,
-            genericAdditionalBuildVariables,
-            cppConfiguration.getFdoInstrument(),
-            cppConfiguration.getCSFdoInstrument());
-      }
-      CcToolchainVariables cctoolchainVariables;
-      try {
-        cctoolchainVariables = ccToolchain.getBuildVars();
-      } catch (EvalException e) {
-        throw new RuleErrorException(e.getMessage());
-      }
-      boolean isUsingMemProf = false;
-      if (fdoContext != null && fdoContext.getMemProfProfileArtifact() != null) {
-        isUsingMemProf = true;
-      }
-      buildVariables = CcToolchainVariables.builder(cctoolchainVariables);
-      CompileBuildVariables.setupCommonVariables(
-          buildVariables,
-          featureConfiguration,
-          ImmutableList.of(),
-          cppModuleMap,
-          CppHelper.getFdoBuildStamp(cppConfiguration, fdoContext, featureConfiguration),
-          isUsingMemProf,
-          variablesExtensions,
-          genericAdditionalBuildVariables,
-          ccCompilationContext.getDirectModuleMaps(),
-          ccCompilationContext.getIncludeDirs(),
-          ccCompilationContext.getQuoteIncludeDirs(),
-          ccCompilationContext.getSystemIncludeDirs(),
-          ccCompilationContext.getFrameworkIncludeDirs(),
-          ccCompilationContext.getDefines(),
-          ccCompilationContext.getNonTransitiveDefines());
-
-      if (usePrebuiltParent) {
-        parent = buildVariables.build();
-        if (needsFdoBuildVariables) {
-          cachedCcToolchainVariables.prebuiltParentWithFdo = parent;
-        } else {
-          cachedCcToolchainVariables.prebuiltParent = parent;
-        }
-        buildVariables = CcToolchainVariables.builder(parent);
-      }
-    }
-    if (usePic
-        && !featureConfiguration.isEnabled(CppRuleClasses.PIC)
-        && !featureConfiguration.isEnabled(CppRuleClasses.SUPPORTS_PIC)) {
-      ruleErrorConsumer.ruleError(CcCommon.PIC_CONFIGURATION_ERROR);
-    }
-
-    CompileBuildVariables.setupSpecificVariables(
-        buildVariables,
-        sourceFile,
-        builder.getOutputFile(),
-        enableCoverage,
-        gcnoFile,
-        dwoFile,
-        isUsingFission,
-        ltoIndexingFile,
-        getCopts(
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            semantics,
-            builder.getSourceFile(),
-            sourceLabel),
-        builder.getDotdFile(),
-        builder.getDiagnosticsFile(),
-        usePic,
-        ccCompilationContext.getExternalIncludeDirs(),
-        additionalBuildVariables);
-    return buildVariables.build();
-  }
-
-  /**
-   * Returns a {@code CppCompileActionBuilder} with the common fields for a C++ compile action being
-   * initialized.
-   */
-  private static CppCompileActionBuilder initializeCompileAction(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      BuildConfigurationValue configuration,
-      CoptsFilter coptsFilter,
-      ImmutableMap<String, String> executionInfo,
-      FeatureConfiguration featureConfiguration,
-      CppSemantics semantics,
-      Artifact sourceArtifact) {
-    return new CppCompileActionBuilder(
-            actionConstructionContext, ccToolchain, configuration, semantics)
-        .setSourceFile(sourceArtifact)
-        .setCcCompilationContext(ccCompilationContext)
-        .setCoptsFilter(coptsFilter)
-        .setFeatureConfiguration(featureConfiguration)
-        .addExecutionInfo(executionInfo);
-  }
-
-  private static void createModuleCodegenAction(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CoptsFilter coptsFilter,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      ImmutableMap<String, String> executionInfo,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      boolean isCodeCoverageEnabled,
-      Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      CcCompilationOutputs.Builder result,
-      Label sourceLabel,
-      Artifact module)
-      throws RuleErrorException, EvalException, InterruptedException {
-    String outputName = module.getRootRelativePath().getBaseName();
-
-    // TODO(djasper): Make this less hacky after refactoring how the PIC/noPIC actions are created.
-    boolean pic = module.getFilename().contains(".pic.");
-
-    CppCompileActionBuilder builder =
-        initializeCompileAction(
-            actionConstructionContext,
-            ccCompilationContext,
-            ccToolchain,
-            configuration,
-            coptsFilter,
-            executionInfo,
-            featureConfiguration,
-            semantics,
-            module);
-    builder.setPicMode(pic);
-    builder.setOutputs(
-        actionConstructionContext,
-        ruleErrorConsumer,
-        label,
-        ArtifactCategory.OBJECT_FILE,
-        outputName);
-    PathFragment ccRelativeName = module.getRootRelativePath();
-
-    String gcnoFileName =
-        CppHelper.getArtifactNameForCategory(
-            ccToolchain, ArtifactCategory.COVERAGE_DATA_FILE, outputName);
-    // TODO(djasper): This is now duplicated. Refactor the various create..Action functions.
-    Artifact gcnoFile =
-        isCodeCoverageEnabled && !cppConfiguration.useLLVMCoverageMapFormat()
-            ? CppHelper.getCompileOutputArtifact(
-                actionConstructionContext, label, gcnoFileName, configuration)
-            : null;
-
-    boolean generateDwo =
-        CcToolchainProvider.shouldCreatePerObjectDebugInfo(featureConfiguration, cppConfiguration);
-    Artifact dwoFile =
-        generateDwo
-            ? getDwoFile(actionConstructionContext, configuration, builder.getOutputFile())
-            : null;
-    // TODO(tejohnson): Add support for ThinLTO if needed.
-    boolean bitcodeOutput =
-        featureConfiguration.isEnabled(CppRuleClasses.THIN_LTO)
-            && CppFileTypes.LTO_SOURCE.matches(module.getFilename());
-    Preconditions.checkState(!bitcodeOutput);
-
-    builder.setVariables(
-        setupCompileBuildVariables(
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            fdoContext,
-            featureConfiguration,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
-            semantics,
-            variablesExtensions,
-            builder,
-            sourceLabel,
-            /* usePic= */ pic,
-            /* needsFdoBuildVariables= */ ccRelativeName != null,
-            ccCompilationContext.getCppModuleMap(),
-            isCodeCoverageEnabled,
-            gcnoFile,
-            generateDwo,
-            dwoFile,
-            /* ltoIndexingFile= */ null,
-            /* additionalBuildVariables= */ ImmutableMap.of()));
-
-    builder.setGcnoFile(gcnoFile);
-    builder.setDwoFile(dwoFile);
-
-    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, builder);
-    CppCompileAction compileAction = builder.buildOrThrowRuleError(ruleErrorConsumer);
-    actionConstructionContext.registerAction(compileAction);
-    Artifact objectFile = compileAction.getPrimaryOutput();
-    if (pic) {
-      result.addPicObjectFile(objectFile);
-    } else {
-      result.addObjectFile(objectFile);
-    }
-  }
-
-  private static void createHeaderAction(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      boolean generatePicAction,
-      Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      Label sourceLabel,
-      String outputName,
-      CcCompilationOutputs.Builder result,
-      CppCompileActionBuilder builder)
-      throws RuleErrorException, EvalException, InterruptedException {
-    String outputNameBase =
-        CppHelper.getArtifactNameForCategory(
-            ccToolchain, ArtifactCategory.GENERATED_HEADER, outputName);
-
-    builder
-        .setOutputs(
-            actionConstructionContext,
-            ruleErrorConsumer,
-            label,
-            ArtifactCategory.PROCESSED_HEADER,
-            outputNameBase)
-        // If we generate pic actions, we prefer the header actions to use the pic artifacts.
-        .setPicMode(generatePicAction);
-    builder.setVariables(
-        setupCompileBuildVariables(
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            fdoContext,
-            featureConfiguration,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
-            semantics,
-            variablesExtensions,
-            builder,
-            sourceLabel,
-            generatePicAction,
-            /* needsFdoBuildVariables= */ false,
-            ccCompilationContext.getCppModuleMap(),
-            /* enableCoverage= */ false,
-            /* gcnoFile= */ null,
-            /* isUsingFission= */ false,
-            /* dwoFile= */ null,
-            /* ltoIndexingFile= */ null,
-            /* additionalBuildVariables= */ ImmutableMap.of()));
-    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, builder);
-    CppCompileAction compileAction = builder.buildOrThrowRuleError(ruleErrorConsumer);
-    actionConstructionContext.registerAction(compileAction);
-    Artifact tokenFile = compileAction.getPrimaryOutput();
-    result.addHeaderTokenFile(tokenFile);
-  }
-
-  private static ImmutableList<Artifact> createModuleAction(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CoptsFilter coptsFilter,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      ImmutableMap<String, String> executionInfo,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      boolean generateNoPicAction,
-      boolean generatePicAction,
-      Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      CcCompilationOutputs.Builder result,
-      CppModuleMap cppModuleMap)
-      throws RuleErrorException, EvalException, InterruptedException {
-    Artifact moduleMapArtifact = cppModuleMap.getArtifact();
-    CppCompileActionBuilder builder =
-        initializeCompileAction(
-            actionConstructionContext,
-            ccCompilationContext,
-            ccToolchain,
-            configuration,
-            coptsFilter,
-            executionInfo,
-            featureConfiguration,
-            semantics,
-            moduleMapArtifact);
-
-    Label sourceLabel = Label.parseCanonicalUnchecked(cppModuleMap.getName());
-
-    // A header module compile action is just like a normal compile action, but:
-    // - the compiled source file is the module map
-    // - it creates a header module (.pcm file).
-    return createSourceAction(
-        actionConstructionContext,
-        ccCompilationContext,
-        ccToolchain,
-        compilationUnitSources,
-        configuration,
-        conlyopts,
-        copts,
-        cppConfiguration,
-        cxxopts,
-        fdoContext,
-        featureConfiguration,
-        generateNoPicAction,
-        generatePicAction,
-        label,
-        cachedCcToolchainVariables,
-        ruleErrorConsumer,
-        semantics,
-        variablesExtensions,
-        sourceLabel,
-        Path.of(sourceLabel.getName()).getFileName().toString(),
-        result,
-        moduleMapArtifact,
-        builder,
-        ArtifactCategory.CPP_MODULE,
-        cppModuleMap,
-        /* addObject= */ false,
-        /* enableCoverage= */ false,
-        /* generateDwo= */ false,
-        /* bitcodeOutput= */ false);
-  }
-
-  @CanIgnoreReturnValue
-  private static ImmutableList<Artifact> createSourceAction(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      boolean generateNoPicAction,
-      boolean generatePicAction,
-      Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      Label sourceLabel,
-      String outputName,
-      CcCompilationOutputs.Builder result,
-      Artifact sourceArtifact,
-      CppCompileActionBuilder builder,
-      ArtifactCategory outputCategory,
-      CppModuleMap cppModuleMap,
-      boolean addObject,
-      boolean enableCoverage,
-      boolean generateDwo,
-      boolean bitcodeOutput)
-      throws RuleErrorException, EvalException, InterruptedException {
-    ImmutableList.Builder<Artifact> directOutputs = new ImmutableList.Builder<>();
-    PathFragment ccRelativeName = sourceArtifact.getRootRelativePath();
-
-    // Create PIC compile actions (same as no-PIC, but use -fPIC and
-    // generate .pic.o, .pic.d, .pic.gcno instead of .o, .d, .gcno.)
-    if (generatePicAction) {
-      CppCompileActionBuilder picBuilder = new CppCompileActionBuilder(builder);
-      picBuilder.setPicMode(true);
-      Artifact picOutputFile =
-          createSourceActionHelper(
-              actionConstructionContext,
-              ccCompilationContext,
-              ccToolchain,
-              compilationUnitSources,
-              configuration,
-              conlyopts,
-              copts,
-              cppConfiguration,
-              cxxopts,
-              fdoContext,
-              featureConfiguration,
-              label,
-              cachedCcToolchainVariables,
-              ruleErrorConsumer,
-              semantics,
-              variablesExtensions,
-              sourceLabel,
-              outputName,
-              result,
-              sourceArtifact,
-              picBuilder,
-              outputCategory,
-              cppModuleMap,
-              addObject,
-              enableCoverage,
-              generateDwo,
-              bitcodeOutput,
-              ccRelativeName,
-              /* usePic= */ true,
-              /* additionalBuildVariables= */ ImmutableMap.of());
-      directOutputs.add(picOutputFile);
-      if (outputCategory == ArtifactCategory.CPP_MODULE) {
-        result.addModuleFile(picOutputFile);
-      }
-    }
-
-    if (generateNoPicAction) {
-      Artifact noPicOutputFile =
-          createSourceActionHelper(
-              actionConstructionContext,
-              ccCompilationContext,
-              ccToolchain,
-              compilationUnitSources,
-              configuration,
-              conlyopts,
-              copts,
-              cppConfiguration,
-              cxxopts,
-              fdoContext,
-              featureConfiguration,
-              label,
-              cachedCcToolchainVariables,
-              ruleErrorConsumer,
-              semantics,
-              variablesExtensions,
-              sourceLabel,
-              outputName,
-              result,
-              sourceArtifact,
-              builder,
-              outputCategory,
-              cppModuleMap,
-              addObject,
-              enableCoverage,
-              generateDwo,
-              bitcodeOutput,
-              ccRelativeName,
-              /* usePic= */ false,
-              /* additionalBuildVariables= */ ImmutableMap.of());
-      directOutputs.add(noPicOutputFile);
-      if (outputCategory == ArtifactCategory.CPP_MODULE) {
-        result.addModuleFile(noPicOutputFile);
-      }
-    }
-    return directOutputs.build();
-  }
-
-  private static Artifact createSourceActionHelper(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      Label sourceLabel,
-      String outputName,
-      CcCompilationOutputs.Builder result,
-      Artifact sourceArtifact,
-      CppCompileActionBuilder builder,
-      ArtifactCategory outputCategory,
-      CppModuleMap cppModuleMap,
-      boolean addObject,
-      boolean enableCoverage,
-      boolean generateDwo,
-      boolean bitcodeOutput,
-      PathFragment ccRelativeName,
-      boolean usePic,
-      ImmutableMap<String, String> additionalBuildVariables)
-      throws RuleErrorException, EvalException, InterruptedException {
-    builder.setOutputs(
-        actionConstructionContext,
-        ruleErrorConsumer,
-        label,
-        outputCategory,
-        getOutputNameBaseWith(ccToolchain, outputName, usePic));
-    String gcnoFileName =
-        CppHelper.getArtifactNameForCategory(
-            ccToolchain,
-            ArtifactCategory.COVERAGE_DATA_FILE,
-            getOutputNameBaseWith(ccToolchain, outputName, usePic));
-
-    Artifact gcnoFile =
-        enableCoverage && !cppConfiguration.useLLVMCoverageMapFormat()
-            ? CppHelper.getCompileOutputArtifact(
-                actionConstructionContext, label, gcnoFileName, configuration)
-            : null;
-
-    Artifact dwoFile =
-        generateDwo && !bitcodeOutput
-            ? getDwoFile(actionConstructionContext, configuration, builder.getOutputFile())
-            : null;
-    Artifact ltoIndexingFile =
-        bitcodeOutput
-            ? getLtoIndexingFile(
-                actionConstructionContext,
-                configuration,
-                featureConfiguration,
-                builder.getOutputFile())
-            : null;
-
-    builder.setVariables(
-        setupCompileBuildVariables(
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            fdoContext,
-            featureConfiguration,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
-            semantics,
-            variablesExtensions,
-            builder,
-            sourceLabel,
-            usePic,
-            /* needsFdoBuildVariables= */ ccRelativeName != null && addObject,
-            cppModuleMap,
-            enableCoverage,
-            gcnoFile,
-            generateDwo,
-            dwoFile,
-            ltoIndexingFile,
-            additionalBuildVariables));
-
-    result.addTemps(
-        createTempsActions(
-            actionConstructionContext,
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            configuration,
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            fdoContext,
-            featureConfiguration,
-            label,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
-            semantics,
-            variablesExtensions,
-            sourceArtifact,
-            sourceLabel,
-            outputName,
-            builder,
-            usePic,
-            ccRelativeName));
-
-    builder.setGcnoFile(gcnoFile);
-    builder.setDwoFile(dwoFile);
-    builder.setLtoIndexingFile(ltoIndexingFile);
-
-    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, builder);
-    CppCompileAction compileAction = builder.buildOrThrowRuleError(ruleErrorConsumer);
-    actionConstructionContext.registerAction(compileAction);
-    Artifact objectFile = compileAction.getPrimaryOutput();
-    if (usePic) {
-      if (addObject) {
-        result.addPicObjectFile(objectFile);
-      }
-      if (dwoFile != null) {
-        // Exec configuration targets don't produce .dwo files.
-        result.addPicDwoFile(dwoFile);
-      }
-      if (gcnoFile != null) {
-        result.addPicGcnoFile(gcnoFile);
-      }
-    } else {
-      if (addObject) {
-        result.addObjectFile(objectFile);
-      }
-      if (dwoFile != null) {
-        // Exec configuration targets don't produce .dwo files.
-        result.addDwoFile(dwoFile);
-      }
-      if (gcnoFile != null) {
-        result.addGcnoFile(gcnoFile);
-      }
-    }
-    if (addObject && bitcodeOutput) {
-      result.addLtoBitcodeFile(
-          objectFile,
-          ltoIndexingFile,
-          getCopts(
-              conlyopts, copts, cppConfiguration, cxxopts, semantics, sourceArtifact, sourceLabel));
-    }
-    return objectFile;
-  }
-
-  static String getOutputNameBaseWith(CcToolchainProvider ccToolchain, String base, boolean usePic)
-      throws RuleErrorException {
-    return usePic
-        ? CppHelper.getArtifactNameForCategory(ccToolchain, ArtifactCategory.PIC_FILE, base)
-        : base;
-  }
-
-  /** Returns true iff code coverage is enabled for the given target. */
-  public static boolean isCodeCoverageEnabled(RuleContext ruleContext) {
-    BuildConfigurationValue configuration = ruleContext.getConfiguration();
-    if (configuration.isCodeCoverageEnabled()) {
-      // If rule is matched by the instrumentation filter, enable instrumentation
-      if (InstrumentedFilesCollector.shouldIncludeLocalSources(
-          configuration, ruleContext.getLabel(), ruleContext.isTestTarget())) {
-        return true;
-      }
-      // At this point the rule itself is not matched by the instrumentation filter. However, we
-      // might still want to instrument C++ rules if one of the targets listed in "deps" is
-      // instrumented and, therefore, can supply header files that we would want to collect code
-      // coverage for. For example, think about cc_test rule that tests functionality defined in a
-      // header file that is supplied by the cc_library.
-      //
-      // Note that we only check direct prerequisites and not the transitive closure. This is done
-      // for two reasons:
-      // a) It is a good practice to declare libraries which you directly rely on. Including headers
-      //    from a library hidden deep inside the transitive closure makes build dependencies less
-      //    readable and can lead to unexpected breakage.
-      // b) Traversing the transitive closure for each C++ compile action would require more complex
-      //    implementation (with caching results of this method) to avoid O(N^2) slowdown.
-      if (ruleContext.getRule().isAttrDefined("deps", BuildType.LABEL_LIST)) {
-        for (TransitiveInfoCollection dep : ruleContext.getPrerequisites("deps")) {
-          CcInfo ccInfo = dep.get(CcInfo.PROVIDER);
-          if (ccInfo != null
-              && InstrumentedFilesCollector.shouldIncludeLocalSources(configuration, dep)) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  }
-
-  private static ImmutableList<String> collectPerFileCopts(
-      CppConfiguration cppConfiguration, Artifact sourceFile, Label sourceLabel) {
-    return cppConfiguration.getPerFileCopts().stream()
-        .filter(
-            perLabelOptions ->
-                (sourceLabel != null && perLabelOptions.isIncluded(sourceLabel))
-                    || perLabelOptions.isIncluded(sourceFile))
-        .map(PerLabelOptions::getOptions)
-        .flatMap(options -> options.stream())
-        .collect(ImmutableList.toImmutableList());
-  }
-
-  private static Artifact getDwoFile(
-      ActionConstructionContext actionConstructionContext,
-      BuildConfigurationValue configuration,
-      Artifact outputFile) {
-    return actionConstructionContext.getRelatedArtifact(
-        outputFile.getOutputDirRelativePath(configuration.isSiblingRepositoryLayout()), ".dwo");
-  }
-
-  @Nullable
-  private static Artifact getLtoIndexingFile(
-      ActionConstructionContext actionConstructionContext,
-      BuildConfigurationValue configuration,
-      FeatureConfiguration featureConfiguration,
-      Artifact outputFile) {
-    if (featureConfiguration.isEnabled(CppRuleClasses.NO_USE_LTO_INDEXING_BITCODE_FILE)) {
-      return null;
-    }
-    String ext = Iterables.getOnlyElement(CppFileTypes.LTO_INDEXING_OBJECT_FILE.getExtensions());
-    return actionConstructionContext.getRelatedArtifact(
-        outputFile.getOutputDirRelativePath(configuration.isSiblingRepositoryLayout()), ext);
-  }
-
-  /** Create the actions for "--save_temps". */
-  private static ImmutableList<Artifact> createTempsActions(
-      ActionConstructionContext actionConstructionContext,
-      CcCompilationContext ccCompilationContext,
-      CcToolchainProvider ccToolchain,
-      Map<Artifact, CppSource> compilationUnitSources,
-      BuildConfigurationValue configuration,
-      ImmutableList<String> conlyopts,
-      ImmutableList<String> copts,
-      CppConfiguration cppConfiguration,
-      ImmutableList<String> cxxopts,
-      FdoContext fdoContext,
-      FeatureConfiguration featureConfiguration,
-      Label label,
-      CachedCcToolchainVariables cachedCcToolchainVariables,
-      RuleErrorConsumer ruleErrorConsumer,
-      CppSemantics semantics,
-      List<VariablesExtension> variablesExtensions,
-      Artifact source,
-      Label sourceLabel,
-      String outputName,
-      CppCompileActionBuilder builder,
-      boolean usePic,
-      PathFragment ccRelativeName)
-      throws RuleErrorException, EvalException, InterruptedException {
-    if (!cppConfiguration.getSaveTemps()) {
-      return ImmutableList.of();
-    }
-
-    String path = source.getFilename();
-    boolean isCFile = CppFileTypes.C_SOURCE.matches(path);
-    boolean isCppFile = CppFileTypes.CPP_SOURCE.matches(path);
-    boolean isObjcFile = CppFileTypes.OBJC_SOURCE.matches(path);
-    boolean isObjcppFile = CppFileTypes.OBJCPP_SOURCE.matches(path);
-
-    if (!isCFile && !isCppFile && !isObjcFile && !isObjcppFile) {
-      return ImmutableList.of();
-    }
-
-    ArtifactCategory category =
-        isCFile ? ArtifactCategory.PREPROCESSED_C_SOURCE : ArtifactCategory.PREPROCESSED_CPP_SOURCE;
-
-    String outputArtifactNameBase = getOutputNameBaseWith(ccToolchain, outputName, usePic);
-
-    CppCompileActionBuilder dBuilder = new CppCompileActionBuilder(builder);
-    dBuilder.setOutputs(
-        actionConstructionContext, ruleErrorConsumer, label, category, outputArtifactNameBase);
-    dBuilder.setVariables(
-        setupCompileBuildVariables(
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            fdoContext,
-            featureConfiguration,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
-            semantics,
-            variablesExtensions,
-            dBuilder,
-            sourceLabel,
-            usePic,
-            /* needsFdoBuildVariables= */ ccRelativeName != null,
-            ccCompilationContext.getCppModuleMap(),
-            /* enableCoverage= */ false,
-            /* gcnoFile= */ null,
-            /* isUsingFission= */ false,
-            /* dwoFile= */ null,
-            /* ltoIndexingFile= */ null,
-            ImmutableMap.of(
-                CompileBuildVariables.OUTPUT_PREPROCESS_FILE.getVariableName(),
-                dBuilder.getRealOutputFilePath().getSafePathString())));
-    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, dBuilder);
-    CppCompileAction dAction = dBuilder.buildOrThrowRuleError(ruleErrorConsumer);
-    actionConstructionContext.registerAction(dAction);
-
-    CppCompileActionBuilder sdBuilder = new CppCompileActionBuilder(builder);
-    sdBuilder.setOutputs(
-        actionConstructionContext,
-        ruleErrorConsumer,
-        label,
-        ArtifactCategory.GENERATED_ASSEMBLY,
-        outputArtifactNameBase);
-    sdBuilder.setVariables(
-        setupCompileBuildVariables(
-            ccCompilationContext,
-            ccToolchain,
-            compilationUnitSources,
-            conlyopts,
-            copts,
-            cppConfiguration,
-            cxxopts,
-            fdoContext,
-            featureConfiguration,
-            cachedCcToolchainVariables,
-            ruleErrorConsumer,
-            semantics,
-            variablesExtensions,
-            sdBuilder,
-            sourceLabel,
-            usePic,
-            /* needsFdoBuildVariables= */ ccRelativeName != null,
-            ccCompilationContext.getCppModuleMap(),
-            /* enableCoverage= */ false,
-            /* gcnoFile= */ null,
-            /* isUsingFission= */ false,
-            /* dwoFile= */ null,
-            /* ltoIndexingFile= */ null,
-            ImmutableMap.of(
-                CompileBuildVariables.OUTPUT_ASSEMBLY_FILE.getVariableName(),
-                sdBuilder.getRealOutputFilePath().getSafePathString())));
-    semantics.finalizeCompileActionBuilder(configuration, featureConfiguration, sdBuilder);
-    CppCompileAction sdAction = sdBuilder.buildOrThrowRuleError(ruleErrorConsumer);
-    actionConstructionContext.registerAction(sdAction);
-
-    return ImmutableList.of(dAction.getPrimaryOutput(), sdAction.getPrimaryOutput());
   }
 }

@@ -5589,25 +5589,23 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
     AssertionError e = assertThrows(AssertionError.class, () -> getConfiguredTarget("//foo:bin"));
     assertThat(e)
         .hasMessageThat()
-        .contains("'a.o' does not have any of the allowed extensions .a, .lib, .pic.a, or .rlib");
+        .contains("'a.o' does not have any of the allowed extensions .a, .lib, .rlib");
     assertThat(e)
         .hasMessageThat()
-        .contains(
-            "'a.pic.o' does not have any of the allowed extensions .a, .lib, .pic.a, or .rlib");
+        .contains("'a.pic.o' does not have any of the allowed extensions .a, .lib, .rlib");
     assertThat(e)
         .hasMessageThat()
         .contains(
             "'a.ifso' does not have any of the allowed extensions .so, .dylib, .dll, .pyd, .wasm,"
-                + " .tgt, or .vpi");
+                + " .tgt, .vpi");
     assertThat(e)
         .hasMessageThat()
         .contains(
             "'a.lib' does not have any of the allowed extensions .so, .dylib, .dll, .pyd, .wasm,"
-                + " .tgt, or .vpi");
+                + " .tgt, .vpi");
     assertThat(e)
         .hasMessageThat()
-        .contains(
-            "'a.dll' does not have any of the allowed extensions .ifso, .tbd, .lib, or .dll.a");
+        .contains("'a.dll' does not have any of the allowed extensions .ifso, .tbd, .lib, .dll.a");
   }
 
   @Test
@@ -6172,10 +6170,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
         "    for dep in ctx.attr._deps:",
         "        dep_compilation_contexts.append(dep[CcInfo].compilation_context)",
         "        dep_linking_contexts.append(dep[CcInfo].linking_context)",
-        "    if ctx.attr._my_cc_toolchain:",
-        "      toolchain = ctx.attr._my_cc_toolchain[cc_common.CcToolchainInfo]",
-        "    else:",
-        "      toolchain = ctx.toolchains['" + TestConstants.CPP_TOOLCHAIN_TYPE + "'].cc",
+        "    toolchain = ctx.toolchains['" + TestConstants.CPP_TOOLCHAIN_TYPE + "'].cc",
         "    feature_configuration = cc_common.configure_features(",
         "        ctx = ctx,",
         "        cc_toolchain=toolchain,",
@@ -6235,8 +6230,6 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
             + " default=['//foo:extra_compiler_input']),",
         "      '_deps': attr.label_list(default=['//foo:dep1', '//foo:dep2']),",
         "      'aspect_deps': attr.label_list(aspects=[_cc_aspect]),",
-        "      '_my_cc_toolchain': attr.label(default =",
-        "          configuration_field(fragment = 'cpp', name = 'cc_toolchain'))",
         "    },",
         fragments,
         "    toolchains = ['" + TestConstants.CPP_TOOLCHAIN_TYPE + "']",
@@ -6845,10 +6838,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
         extensionDirectory + "/extension.bzl",
         "load('//myinfo:myinfo.bzl', 'MyInfo')",
         "def _cc_bin_impl(ctx):",
-        "    if ctx.attr._cc_toolchain:",
-        "      toolchain = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]",
-        "    else:",
-        "      toolchain = ctx.toolchains['" + TestConstants.CPP_TOOLCHAIN_TYPE + "'].cc",
+        "    toolchain = ctx.toolchains['" + TestConstants.CPP_TOOLCHAIN_TYPE + "'].cc",
         "    feature_configuration = cc_common.configure_features(",
         "      ctx = ctx,",
         "      cc_toolchain = toolchain,",
@@ -6880,8 +6870,6 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
         "      'objects': attr.label_list(allow_files=True),",
         "      'pic_objects': attr.label_list(allow_files=True),",
         "      'deps': attr.label_list(),",
-        "      '_cc_toolchain': attr.label(default =",
-        "          configuration_field(fragment = 'cpp', name = 'cc_toolchain')),",
         "      'additional_outputs': attr.output_list(),",
         "    },",
         fragments,
@@ -7521,7 +7509,6 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
         def _impl(ctx):
             module_map = cc_common.create_module_map(
                 file = ctx.file.file,
-                umbrella_header = ctx.file.file,
                 name = "module",
             )
             return [ModuleMapInfo(module_map = module_map, file = ctx.file.file)]
@@ -7540,9 +7527,8 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
             + " name = 'name', cc_toolchain = toolchain, ";
     List<String> calls =
         ImmutableList.of(
-            "cc_common.create_module_map(file=file, umbrella_header=file, name='name')",
+            "cc_common.create_module_map(file=file, name='name')",
             "module_map.file()",
-            "module_map.umbrella_header()",
             compileCall + " module_map = module_map)",
             compileCall + " additional_module_maps = [module_map])",
             compileCall + "additional_exported_hdrs = [])",
@@ -7808,8 +7794,6 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
 
     ImmutableList<String> calls =
         ImmutableList.of(
-            "library_to_link.shared_non_lto_backends()",
-            "library_to_link.pic_shared_non_lto_backends()",
             "lto_backend_artifacts_info.lto_backend_artifacts.object_file()");
     scratch.overwriteFile(
         "a/BUILD",
@@ -7887,7 +7871,6 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
             "cc_common.create_library_to_link(actions=ctx.actions,"
                 + "feature_configuration=feature_configuration, cc_toolchain=toolchain,"
                 + " must_keep_debug=False)",
-            "library_to_link.must_keep_debug()",
             "cc_common.create_library_to_link(actions=ctx.actions,"
                 + "feature_configuration=feature_configuration, cc_toolchain=toolchain,"
                 + " lto_compilation_context=None)");
@@ -8029,7 +8012,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
         action
             .getCompileCommandLine()
             .getVariables()
-            .getSequenceVariable("string_sequence_variable", PathMapper.NOOP);
+            .getVariable("string_sequence_variable", PathMapper.NOOP);
     var unused2 =
         action
             .getCompileCommandLine()
@@ -8039,7 +8022,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
         action
             .getCompileCommandLine()
             .getVariables()
-            .getSequenceVariable("string_depset_variable", PathMapper.NOOP);
+            .getVariable("string_depset_variable", PathMapper.NOOP);
   }
 
   @Test
@@ -8053,7 +8036,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
     var unused1 =
         getLinkCommandLine(action)
             .getBuildVariables()
-            .getSequenceVariable("string_sequence_variable", PathMapper.NOOP);
+            .getVariable("string_sequence_variable", PathMapper.NOOP);
     var unused2 =
         getLinkCommandLine(action)
             .getBuildVariables()
@@ -8061,7 +8044,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
     var unused3 =
         getLinkCommandLine(action)
             .getBuildVariables()
-            .getSequenceVariable("string_depset_variable", PathMapper.NOOP);
+            .getVariable("string_depset_variable", PathMapper.NOOP);
   }
 
   @Test
@@ -8077,7 +8060,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
     var unused1 =
         getLinkCommandLine(action)
             .getBuildVariables()
-            .getSequenceVariable("string_sequence_variable", PathMapper.NOOP);
+            .getVariable("string_sequence_variable", PathMapper.NOOP);
     var unused2 =
         getLinkCommandLine(action)
             .getBuildVariables()
@@ -8085,7 +8068,7 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
     var unused3 =
         getLinkCommandLine(action)
             .getBuildVariables()
-            .getSequenceVariable("string_depset_variable", PathMapper.NOOP);
+            .getVariable("string_depset_variable", PathMapper.NOOP);
   }
 
   @Test
@@ -8868,17 +8851,10 @@ public class StarlarkCcCommonTest extends BuildViewTestCase {
     scratch.file(
         "foo/extension.bzl",
         "def _cc_skylark_library_impl(ctx):",
-        "    if ctx.attr._cc_toolchain:",
-        "      toolchain = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]",
-        "    else:",
-        "      toolchain = ctx.toolchains['" + TestConstants.CPP_TOOLCHAIN_TYPE + "'].cc",
+        "    toolchain = ctx.toolchains['" + TestConstants.CPP_TOOLCHAIN_TYPE + "'].cc",
         "    return [toolchain]",
         "cc_skylark_library = rule(",
         "    implementation = _cc_skylark_library_impl,",
-        "    attrs = {",
-        "      '_cc_toolchain': attr.label(default =",
-        "          configuration_field(fragment = 'cpp', name = 'cc_toolchain')),",
-        "    },",
         "    fragments = ['cpp'],",
         "    toolchains = ['" + TestConstants.CPP_TOOLCHAIN_TYPE + "']",
         ")");

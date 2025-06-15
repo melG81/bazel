@@ -41,6 +41,7 @@ import com.google.devtools.build.lib.analysis.starlark.StarlarkGlobalsImpl;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleClassFunctions.MacroFunction;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleClassFunctions.StarlarkRuleFunction;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
+import com.google.devtools.build.lib.analysis.test.CoverageConfiguration;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.analysis.util.TestAspects;
 import com.google.devtools.build.lib.cmdline.BazelModuleContext;
@@ -80,7 +81,6 @@ import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.packages.Types;
-import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 import com.google.devtools.build.lib.skyframe.BzlLoadValue;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.RoundTripping;
@@ -575,13 +575,13 @@ public final class StarlarkRuleClassFunctionsTest extends BuildViewTestCase {
     // the analysis mock to register the fragment. But since our expected failure occurs during
     // .bzl loading, our test machinery doesn't process the error correctly, and instead
     // getPackage() returns null and no events are emitted.)
-    ev.setFragmentNameToClass(ImmutableMap.of("cpp", CppConfiguration.class));
+    ev.setFragmentNameToClass(ImmutableMap.of("coverage", CoverageConfiguration.class));
 
     ev.checkEvalErrorContains(
         "In macro attribute 'xyz': Macros do not support computed defaults or late-bound defaults",
         """
         def _impl(name, visibility, xyz): pass
-        _latebound_default = configuration_field(fragment = "cpp", name = "cc_toolchain")
+        _latebound_default = configuration_field(fragment = "coverage", name = "output_generator")
         my_macro = macro(
             implementation=_impl,
             attrs = {
@@ -952,24 +952,18 @@ public final class StarlarkRuleClassFunctionsTest extends BuildViewTestCase {
   @Test
   public void testAttrWithWrongProvidersList() throws Exception {
     checkAttributeError(
-        "element in 'providers' is of unexpected type. Either all elements should be providers,"
-            + " or all elements should be lists of providers,"
-            + " but got list with an element of type int.",
+        "Error in label_list: at index 1 of providers, got element of type int, want Provider",
         "a = provider()",
         "c = provider()",
         "attr.label_list(allow_files = True,  providers = [[a, 1], [c]])");
 
     checkAttributeError(
-        "element in 'providers' is of unexpected type. Either all elements should be providers,"
-            + " or all elements should be lists of providers,"
-            + " but got an element of type string.",
+        "Error in label_list: at index 1 of providers, got element of type string, want sequence",
         "b = provider()",
         "attr.label_list(allow_files = True,  providers = [['a', b], 'c'])");
 
     checkAttributeError(
-        "element in 'providers' is of unexpected type. Either all elements should be providers,"
-            + " or all elements should be lists of providers,"
-            + " but got an element of type string.",
+        "Error in label_list: at index 1 of providers, got element of type Provider, want sequence",
         "a = provider()",
         "b = provider()",
         "c = provider()",
@@ -2914,8 +2908,7 @@ public final class StarlarkRuleClassFunctionsTest extends BuildViewTestCase {
         "my_aspect = aspect(_impl, provides = [y, 1])");
     MoreAsserts.assertContainsEvent(
         ev.getEventCollector(),
-        " Illegal argument: element in 'provides' is of unexpected type."
-            + " Should be list of providers, but got item of type int. ");
+        "Error in aspect: at index 1 of provides, got element of type int, want Provider");
   }
 
   @Test
