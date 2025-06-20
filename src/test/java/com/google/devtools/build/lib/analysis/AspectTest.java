@@ -897,9 +897,6 @@ public class AspectTest extends AnalysisTestCase {
     assertContainsEvent(
         "Aspect 'FalseAdvertisementAspect', applied to '//a:s',"
             + " does not provide advertised provider 'RequiredProvider'");
-    assertContainsEvent(
-        "Aspect 'FalseAdvertisementAspect', applied to '//a:s',"
-            + " does not provide advertised provider 'advertised_provider'");
   }
 
   @Test
@@ -1135,20 +1132,15 @@ public class AspectTest extends AnalysisTestCase {
         a = aspect(
             implementation = _a_impl,
             attrs = {"_f": attr.label(
-                default = configuration_field(
-                    fragment = "cpp",
-                    name = "cc_toolchain",
-                ),
+                default = configuration_field(fragment = "coverage", name = "output_generator"),
             )},
         )
         r = rule(
             implementation = _r_impl,
             attrs = {
                 "_f": attr.label(
-                    default = configuration_field(
-                        fragment = "cpp",
-                        name = "cc_toolchain",
-                    ),
+                    default =
+                        configuration_field(fragment = "coverage", name = "output_generator"),
                 ),
                 "dep": attr.label(aspects = [a]),
             },

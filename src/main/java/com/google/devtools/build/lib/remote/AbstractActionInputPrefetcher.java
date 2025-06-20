@@ -223,23 +223,29 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
     this.outputPermissions = outputPermissions;
   }
 
-  private static boolean shouldDownloadFile(Path path, FileArtifactValue metadata) {
-    if (!path.exists()) {
+  private static boolean shouldDownloadFile(Path path, FileArtifactValue metadata)
+      throws IOException {
+    var stat = path.statIfFound();
+    if (stat == null) {
       return true;
     }
 
-    // In the most cases, skyframe should be able to detect source files modifications and delete
-    // staled outputs before action execution. However, there are some cases where outputs are not
-    // tracked by skyframe. We compare the digest here to make sure we don't use staled files.
-    try {
-      byte[] digest = path.getFastDigest();
-      if (digest == null) {
-        digest = path.getDigest();
-      }
-      return !Arrays.equals(digest, metadata.getDigest());
-    } catch (IOException ignored) {
+    // If an action output is stale, Skyframe will delete it prior to action execution. However,
+    // this doesn't apply to spawn outputs that aren't action outputs. To avoid incorrectly reusing
+    // one such stale output, check for its up-to-dateness here.
+    if (stat.getSize() != metadata.getSize()) {
       return true;
     }
+    var contentsProxy = metadata.getContentsProxy();
+    if (contentsProxy != null && contentsProxy.equals(FileContentsProxy.create(stat))) {
+      return false;
+    }
+
+    byte[] digest = path.getFastDigest();
+    if (digest == null) {
+      digest = path.getDigest();
+    }
+    return !Arrays.equals(digest, metadata.getDigest());
   }
 
   protected abstract boolean canDownloadFile(Path path, FileArtifactValue metadata);
@@ -624,16 +630,14 @@ public abstract class AbstractActionInputPrefetcher implements ActionInputPrefet
       // parent directory after prefetching.
       directoryTracker.setTemporarilyWritable(parentDir);
     } else {
-      // There are three cases:
+      // One of the following must apply:
       //   (1) The file does not belong to a tree artifact.
       //   (2) The file belongs to a tree artifact created by an action template expansion.
-      //   (3) The file belongs to a tree artifact but we don't know it. This can occur when the
-      //       file belongs to a tree artifact inside a fileset (see b/254844173).
       // In case (1), the parent directory is a package or a subdirectory of a package, and should
-      // remain writable. In cases (2) and (3), even though we arguably ought to set the output
-      // permissions on the parent directory to match the outcome of a locally executed action, we
-      // choose not to do it and avoid the additional implementation complexity required to detect a
-      // race condition between concurrent calls touching the same directory.
+      // remain writable. In case (2), even though we arguably ought to set the output permissions
+      // on the parent directory to match local execution, we choose not to do it and avoid the
+      // additional implementation complexity required to detect a race condition between concurrent
+      // calls touching the same directory.
       directoryTracker.setPermanentlyWritable(parentDir);
     }
 

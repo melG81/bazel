@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright 2016 The Bazel Authors. All rights reserved.
 #
@@ -354,31 +354,6 @@ EOF
       --spawn_strategy=remote \
       --remote_executor=grpc://localhost:${worker_port} \
       --test_output=errors \
-      --noexperimental_split_xml_generation \
-      //a:test >& $TEST_log \
-      || fail "Failed to run //a:test with remote execution"
-}
-
-function test_cc_test_split_xml() {
-  add_rules_cc "MODULE.bazel"
-  mkdir -p a
-  cat > a/BUILD <<EOF
-load("@rules_cc//cc:cc_test.bzl", "cc_test")
-package(default_visibility = ["//visibility:public"])
-cc_test(
-name = 'test',
-srcs = [ 'test.cc' ],
-)
-EOF
-  cat > a/test.cc <<EOF
-#include <iostream>
-int main() { std::cout << "Hello test!" << std::endl; return 0; }
-EOF
-  bazel test \
-      --spawn_strategy=remote \
-      --remote_executor=grpc://localhost:${worker_port} \
-      --test_output=errors \
-      --experimental_split_xml_generation \
       //a:test >& $TEST_log \
       || fail "Failed to run //a:test with remote execution"
 }
@@ -827,7 +802,7 @@ sh_test(
 EOF
 
   cat > a/sleep.sh <<'EOF'
-#!/bin/bash
+#!/usr/bin/env bash
 for i in {1..3}
 do
     echo "Sleeping $i..."
@@ -1249,7 +1224,7 @@ function test_nobuild_runfile_links() {
   mkdir data && echo "hello" > data/hello && echo "world" > data/world
   add_rules_shell "MODULE.bazel"
   cat > test.sh <<'EOF'
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 [[ -f ${RUNFILES_DIR}/_main/data/hello ]]
 [[ -f ${RUNFILES_DIR}/_main/data/world ]]
@@ -3770,8 +3745,10 @@ EOF
 # remote execution regardless of whether they are added as a source directory or
 # via globbing.
 function test_source_directory() {
+  add_rules_shell "MODULE.bazel"
   mkdir -p a
   cat > a/BUILD <<'EOF'
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 filegroup(
     name = "source_directory",
     srcs = ["dir"],

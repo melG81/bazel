@@ -75,6 +75,8 @@ import org.junit.Test;
  * SkyFunctions#COLLECT_PACKAGES_UNDER_DIRECTORY}.
  */
 public abstract class AbstractCollectPackagesUnderDirectoryTest {
+  private static final String FAKE_INSTALL_MD5_STRING = "abcedf1234567890abcedf1234567890";
+
   protected FileSystem fileSystem;
   protected Root root;
   protected Path workingDir;
@@ -100,7 +102,7 @@ public abstract class AbstractCollectPackagesUnderDirectoryTest {
                 fileSystem.getPath("/user_root"),
                 fileSystem.getPath("/execroot"),
                 useVirtualSourceRoot() ? root : null,
-                null),
+                FAKE_INSTALL_MD5_STRING),
             workingDir,
             /* defaultSystemJavabase= */ null,
             /* productName= */ "DummyProductNameForUnitTests");
@@ -319,8 +321,6 @@ public abstract class AbstractCollectPackagesUnderDirectoryTest {
                 BugReporter.defaultInstance());
     skyframeExecutor.injectExtraPrecomputedValues(
         ImmutableList.of(
-            PrecomputedValue.injected(
-                RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE, Optional.empty()),
             PrecomputedValue.injected(
                 RepositoryMappingFunction.REPOSITORY_OVERRIDES, ImmutableMap.of()),
             PrecomputedValue.injected(

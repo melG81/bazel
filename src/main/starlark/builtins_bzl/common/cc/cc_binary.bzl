@@ -24,7 +24,6 @@ load(":common/cc/semantics.bzl", "semantics")
 
 DebugPackageInfo = _builtins.toplevel.DebugPackageInfo
 cc_internal = _builtins.internal.cc_internal
-StaticallyLinkedMarkerInfo = _builtins.internal.StaticallyLinkedMarkerProvider
 
 # TODO(blaze-team): cleanup lint target types
 _EXECUTABLE = "executable"
@@ -775,8 +774,6 @@ def cc_binary_impl(ctx, additional_linkopts, force_linkstatic = False):
         debug_package_info,
         OutputGroupInfo(**output_groups),
     ]
-    if "fully_static_link" in ctx.features:
-        result.append(StaticallyLinkedMarkerInfo(is_linked_statically = True))
     if cc_launcher_info != None:
         result.append(cc_launcher_info)
     return binary_info, result
@@ -785,7 +782,7 @@ ALLOWED_SRC_FILES = []
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.CC_SOURCE)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.C_SOURCE)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.CC_HEADER)
-ALLOWED_SRC_FILES.extend(cc_helper.extensions.ASSESMBLER_WITH_C_PREPROCESSOR)
+ALLOWED_SRC_FILES.extend(cc_helper.extensions.ASSEMBLER_WITH_C_PREPROCESSOR)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.ASSEMBLER)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.ARCHIVE)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.PIC_ARCHIVE)
