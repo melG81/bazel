@@ -9,6 +9,7 @@ filegroup(
     name = "srcs",
     srcs = glob(["**"]) + [
         "//src/main/java/com/google/devtools/build/lib/util/io:srcs",
+        "//src/main/java/com/google/devtools/build/lib/util/regex:srcs",
     ],
     visibility = ["//src:__subpackages__"],
 )
@@ -56,6 +57,7 @@ java_library(
     deps = [
         ":os",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
+        "//src/main/java/com/google/devtools/build/lib/concurrent:thread_safety",
         "//src/main/java/com/google/devtools/build/lib/unix",
         "//src/main/java/com/google/devtools/build/lib/windows:processes",
     ],
@@ -254,6 +256,7 @@ java_library(
         ":string_encoding",
         "//src/main/java/com/google/devtools/build/lib/bugreport",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
+        "//src/main/java/com/google/devtools/build/lib/concurrent:thread_safety",
         "//src/main/java/com/google/devtools/build/lib/util/io",
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
@@ -332,6 +335,7 @@ java_library(
     ],
     deps = [
         "//src/main/java/com/google/devtools/build/lib/concurrent",
+        "//src/main/java/com/google/devtools/build/lib/concurrent:thread_safety",
         "//third_party:guava",
         "//third_party:jsr305",
     ],

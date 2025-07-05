@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright 2016 The Bazel Authors. All rights reserved.
 #
@@ -114,7 +114,7 @@ function test_bootstrap() {
     # the repo cache is currently missing canonical IDs
     export BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0
 
-    JAVA_VERSION=exotic # so we don't accidentally match something else
+    JAVA_VERSION=100 # so we don't accidentally match something else
 
     # create a fake toolchain to avoid @remote_java_tools
     # this can't actually build anything, but we're just testing analysis
@@ -142,10 +142,10 @@ EOF
 
     ./output/bazel \
       --server_javabase=$JAVABASE --host_jvm_args=--add-opens=java.base/java.nio=ALL-UNNAMED \
-      build --nobuild --repository_cache=derived/repository_cache \
+      build --nobuild --repository_cache=derived/repository_cache --repo_contents_cache= \
       --override_repository=$(cat derived/maven/MAVEN_CANONICAL_REPO_NAME)=derived/maven \
       --java_language_version=${JAVA_VERSION} --tool_java_language_version=${JAVA_VERSION} \
-      --tool_java_runtime_version=local_jdk \
+      --java_runtime_version=local_jdk --tool_java_runtime_version=local_jdk \
       --extra_toolchains=@rules_python//python/runtime_env_toolchains:all \
       --extra_toolchains=fake_java_toolchain:all \
       src:bazel_nojdk &> "${TEST_log}" || fail "analysis with bootstrapped Bazel failed"

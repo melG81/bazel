@@ -313,8 +313,9 @@ public final class BlazeWorkspace {
       List<String> warnings,
       long waitTimeInMs,
       long commandStartTime,
-      List<Any> commandExtensions,
+      @Nullable ImmutableList<IdleTask.Result> idleTaskResultsFromPreviousIdlePeriod,
       Consumer<String> shutdownReasonConsumer,
+      List<Any> commandExtensions,
       CommandExtensionReporter commandExtensionReporter,
       int attemptNumber,
       @Nullable String buildRequestIdOverride,
@@ -335,8 +336,9 @@ public final class BlazeWorkspace {
             warnings,
             waitTimeInMs,
             commandStartTime,
-            commandExtensions,
+            idleTaskResultsFromPreviousIdlePeriod,
             shutdownReasonConsumer,
+            commandExtensions,
             commandExtensionReporter,
             attemptNumber,
             buildRequestIdOverride,
@@ -486,7 +488,7 @@ public final class BlazeWorkspace {
         skyframeExecutor.getBuildFilesByPriority());
   }
 
-  @Nullable
+  @Nullable // Null for commands that don't have PackageOptions (version, help, shutdown, etc).
   private PathPackageLocator getOrCreatePackageLocatorForCommand(OptionsParsingResult options) {
     var packageOptions = options.getOptions(PackageOptions.class);
     Path workspace = directories.getWorkspace();

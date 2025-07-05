@@ -22,7 +22,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.docgen.annot.DocCategory;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.bazel.debug.WorkspaceRuleEvent;
-import com.google.devtools.build.lib.bazel.repository.PatchUtil;
+import com.google.devtools.build.lib.bazel.repository.RepositoryFunctionException;
+import com.google.devtools.build.lib.bazel.repository.decompressor.PatchUtil;
 import com.google.devtools.build.lib.bazel.repository.downloader.DownloadManager;
 import com.google.devtools.build.lib.cmdline.IgnoredSubdirectories;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -34,10 +35,8 @@ import com.google.devtools.build.lib.packages.StructProvider;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.repository.RepositoryFetchProgress;
-import com.google.devtools.build.lib.rules.repository.NeedsSkyframeRestartException;
 import com.google.devtools.build.lib.rules.repository.RepoRecordedInput;
 import com.google.devtools.build.lib.rules.repository.RepoRecordedInput.RepoCacheFriendlyPath;
-import com.google.devtools.build.lib.rules.repository.RepositoryFunction.RepositoryFunctionException;
 import com.google.devtools.build.lib.rules.repository.WorkspaceAttributeMapper;
 import com.google.devtools.build.lib.runtime.ProcessWrapper;
 import com.google.devtools.build.lib.runtime.RepositoryRemoteExecutor;
@@ -89,7 +88,7 @@ public class StarlarkRepositoryContext extends StarlarkBaseExternalContext {
    * Create a new context (repository_ctx) object for a Starlark repository rule ({@code rule}
    * argument).
    */
-  StarlarkRepositoryContext(
+  public StarlarkRepositoryContext(
       Rule rule,
       PathPackageLocator packageLocator,
       Path outputDirectory,
@@ -370,7 +369,7 @@ public class StarlarkRepositoryContext extends StarlarkBaseExternalContext {
   }
 
   @Override
-  protected boolean isRemotable() {
+  public boolean isRemotable() {
     Object remotable = rule.getAttr("$remotable");
     if (remotable != null) {
       return (Boolean) remotable;
@@ -602,6 +601,51 @@ public class StarlarkRepositoryContext extends StarlarkBaseExternalContext {
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
+  }
+
+  @StarlarkMethod(
+      name = "repo_metadata",
+      doc =
+          """
+          Constructs an opaque object that can be returned from the repo rule's implementation \
+          function to provide metadata about its reproducibility.
+          """,
+      parameters = {
+        @Param(
+            name = "reproducible",
+            defaultValue = "False",
+            doc =
+                """
+                States that this repo can be reproducibly refetched; that is, if it were fetched \
+                another time with exactly the same input attributes, repo rule definition, watched \
+                files and environment variables, etc., then exactly the same output would be \
+                produced. This property needs to hold even if other untracked conditions change, \
+                such as information from the internet, the path of the workspace root, output from \
+                running arbitrary executables, etc. If set to True, this allows the fetched repo \
+                contents to be cached across workspaces. \
+                <p>Note that setting this to True does not guarantee caching in the repo contents \
+                cache; for example, local repo rules are never cached.
+                """,
+            positional = false,
+            named = true),
+        @Param(
+            name = "attrs_for_reproducibility",
+            defaultValue = "{}",
+            doc =
+                """
+                If <code>reproducible</code> is False, this can be specified to tell Bazel which \
+                attributes of the original repo rule to change to make it reproducible.
+                """,
+            positional = false,
+            named = true)
+      })
+  public RepoMetadata repoMetadata(boolean reproducible, Dict<?, ?> attrs) throws EvalException {
+    if (reproducible && !attrs.isEmpty()) {
+      throw Starlark.errorf(
+          "attrs_for_reproducibility can only be specified if reproducible is False");
+    }
+    return new RepoMetadata(
+        reproducible ? RepoMetadata.Reproducibility.YES : RepoMetadata.Reproducibility.NO, attrs);
   }
 
   @Override

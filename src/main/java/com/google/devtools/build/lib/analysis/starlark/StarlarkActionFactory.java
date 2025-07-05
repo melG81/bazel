@@ -64,7 +64,6 @@ import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.server.FailureDetails.Interrupted;
 import com.google.devtools.build.lib.skyframe.serialization.VisibleForSerialization;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.starlarkbuildapi.FileApi;
@@ -349,7 +348,8 @@ public class StarlarkActionFactory implements StarlarkActionFactoryApi {
               NestedSetBuilder.wrap(Order.STABLE_ORDER, args.getDirectoryArtifacts()),
               (Artifact) output,
               args.build(getMainRepoMappingSupplier()),
-              args.getParameterFileType());
+              args.getParameterFileType(),
+              isExecutable);
     } else {
       throw new AssertionError("Unexpected type: " + content.getClass().getSimpleName());
     }
@@ -868,7 +868,8 @@ public class StarlarkActionFactory implements StarlarkActionFactoryApi {
     }
 
     @Override
-    public ResourceSet buildResourceSet(OS os, int inputsSize) throws ExecException {
+    public ResourceSet buildResourceSet(OS os, int inputsSize)
+        throws ExecException, InterruptedException {
       try (Mutability mu = Mutability.create("resource_set_builder_function")) {
         // Only numerical values are retained from the result, so a transient SymbolGenerator
         // is fine.
@@ -906,13 +907,6 @@ public class StarlarkActionFactory implements StarlarkActionFactoryApi {
                     FailureDetails.StarlarkAction.newBuilder()
                         .setCode(FailureDetails.StarlarkAction.Code.STARLARK_ACTION_UNKNOWN)
                         .build())
-                .build());
-      } catch (InterruptedException e) {
-        throw new UserExecException(
-            FailureDetail.newBuilder()
-                .setMessage(e.getMessage())
-                .setInterrupted(
-                    Interrupted.newBuilder().setCode(Interrupted.Code.INTERRUPTED).build())
                 .build());
       }
     }

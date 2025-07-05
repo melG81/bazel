@@ -47,6 +47,8 @@ import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLogBufferPathGenerator;
 import com.google.devtools.build.lib.actions.ActionLookupData;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupValue;
 import com.google.devtools.build.lib.actions.ActionOutputDirectoryHelper;
 import com.google.devtools.build.lib.actions.ActionOutputDirectoryHelper.CreateOutputDirectoryException;
 import com.google.devtools.build.lib.actions.ActionOwner;
@@ -188,6 +190,7 @@ public final class SkyframeActionExecutor {
   private final MetadataConsumerForMetrics outputArtifactsFromActionCache;
   private final SyscallCache syscallCache;
   private final Function<SkyKey, ThreadStateReceiver> threadStateReceiverFactory;
+  private final ExistingActionLookupValuePeeker actionLookupValuePeeker;
   private Reporter reporter;
   private ImmutableMap<String, String> clientEnv = ImmutableMap.of();
   private Executor executorEngine;
@@ -266,7 +269,8 @@ public final class SkyframeActionExecutor {
       AtomicReference<ActionExecutionStatusReporter> statusReporterRef,
       Supplier<ImmutableList<Root>> sourceRootSupplier,
       SyscallCache syscallCache,
-      Function<SkyKey, ThreadStateReceiver> threadStateReceiverFactory) {
+      Function<SkyKey, ThreadStateReceiver> threadStateReceiverFactory,
+      ExistingActionLookupValuePeeker actionLookupValuePeeker) {
     this.actionKeyContext = actionKeyContext;
     this.outputArtifactsSeen = outputArtifactsSeen;
     this.outputArtifactsFromActionCache = outputArtifactsFromActionCache;
@@ -274,6 +278,23 @@ public final class SkyframeActionExecutor {
     this.sourceRootSupplier = sourceRootSupplier;
     this.syscallCache = syscallCache;
     this.threadStateReceiverFactory = threadStateReceiverFactory;
+    this.actionLookupValuePeeker = actionLookupValuePeeker;
+  }
+
+  /**
+   * Helper for determining if an {@link ActionLookupData} has been rewound.
+   *
+   * <p>This is used during action execution when the {@link ActionLookupData} is available, but the
+   * corresponding {@link Action} is not, to determine if the action has been rewound, without
+   * creating a dependency.
+   *
+   * <p>The absence of an {@link ActionLookupValue} implies that the action has not been rewound,
+   * without needing to declare a Skyframe dependency. This is useful in the case where the values
+   * can be fetched remotely.
+   */
+  static interface ExistingActionLookupValuePeeker {
+    @Nullable // null if the value is not in Skyframe
+    ActionLookupValue getExistingActionLookupValue(ActionLookupKey key) throws InterruptedException;
   }
 
   SharedActionCallback getSharedActionCallback(
@@ -444,12 +465,8 @@ public final class SkyframeActionExecutor {
   }
 
   private void updateActionFileSystemContext(
-      Action action,
-      FileSystem actionFileSystem,
-      OutputMetadataStore outputMetadataStore,
-      Map<Artifact, FilesetOutputTree> filesets) {
-    outputService.updateActionFileSystemContext(
-        action, actionFileSystem, outputMetadataStore, filesets);
+      Action action, FileSystem actionFileSystem, OutputMetadataStore outputMetadataStore) {
+    outputService.updateActionFileSystemContext(action, actionFileSystem, outputMetadataStore);
   }
 
   void executionOver() {
@@ -481,6 +498,33 @@ public final class SkyframeActionExecutor {
   /** Determines whether the given action was rewound during the current build. */
   public boolean wasRewound(Action action) {
     return rewoundActions.contains(new OwnerlessArtifactWrapper(action.getPrimaryOutput()));
+  }
+
+  /**
+   * True if remote fetch should be skipped for this {@code lookupData} because it was rewound.
+   *
+   * <p>This happens when an action fails to execute because one of its inputs was lost. It usually
+   * indicates that the remotely fetched {@code ActionExecutionValue} references remote data that is
+   * inaccessible.
+   */
+  public boolean shouldSkipRemoteFetch(ActionLookupData lookupData) throws InterruptedException {
+    ActionLookupValue lookupValue =
+        actionLookupValuePeeker.getExistingActionLookupValue(lookupData.getActionLookupKey());
+    if (lookupValue == null) {
+      // Since rewinding causes the owner of the corresponding action to be analyzed, if the action
+      // owner is missing, then rewinding has not occurred.
+      return false;
+    }
+    return wasRewound(lookupValue.getAction(lookupData.getActionIndex()));
+  }
+
+  /**
+   * Returns the count of actions rewound during the current build.
+   *
+   * <p>If an action is rewound multiple times, it is only counted once.
+   */
+  public int getRewoundActionCount() {
+    return rewoundActions.size();
   }
 
   /**
@@ -548,11 +592,7 @@ public final class SkyframeActionExecutor {
       boolean hasDiscoveredInputs)
       throws ActionExecutionException, InterruptedException {
     if (actionFileSystem != null) {
-      updateActionFileSystemContext(
-          action,
-          actionFileSystem,
-          outputMetadataStore,
-          compositeInputMetadataProvider.getFilesets());
+      updateActionFileSystemContext(action, actionFileSystem, outputMetadataStore);
     }
 
     ActionExecutionContext actionExecutionContext =
@@ -886,10 +926,7 @@ public final class SkyframeActionExecutor {
             threadStateReceiverFactory.apply(actionLookupData));
     if (actionFileSystem != null) {
       updateActionFileSystemContext(
-          action,
-          actionFileSystem,
-          THROWING_OUTPUT_METADATA_STORE_FOR_ACTIONFS,
-          /* filesets= */ ImmutableMap.of());
+          action, actionFileSystem, THROWING_OUTPUT_METADATA_STORE_FOR_ACTIONFS);
       // Note that when not using ActionFS, a global setup of the parent directories of the OutErr
       // streams is sufficient.
       setupActionFsFileOutErr(fileOutErr, action);

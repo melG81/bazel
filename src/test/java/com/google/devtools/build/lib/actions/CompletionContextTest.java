@@ -53,7 +53,7 @@ public final class CompletionContextTest {
   private final ArtifactRoot outputRoot =
       ArtifactRoot.asDerivedRoot(
           new InMemoryFileSystem(DigestHashFunction.SHA256).getPath("/execroot"),
-          RootType.Output,
+          RootType.OUTPUT,
           "out");
 
   @Test
@@ -163,7 +163,6 @@ public final class CompletionContextTest {
     return new CompletionContext(
         ImmutableMap.copyOf(treeExpansions),
         ImmutableMap.copyOf(filesetExpansions),
-        /* baselineCoverageValue= */ null,
         ArtifactPathResolver.IDENTITY,
         inputMap,
         expandFilesets);

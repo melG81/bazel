@@ -30,6 +30,7 @@ java_library(
 java_library(
     name = "util_internal",
     srcs = glob(["*.java"]),
+    data = ["//src/main/protobuf/project:project_proto_scl_filegroup"],
     deps = [
         "//src/main/java/com/google/devtools/build/lib:build-request-options",
         "//src/main/java/com/google/devtools/build/lib:keep-going-option",
@@ -116,11 +117,13 @@ java_library(
         "//src/test/java/com/google/devtools/build/lib/vfs/util",
         "//src/test/java/com/google/devtools/build/skyframe:testutil",
         "//third_party:error_prone_annotations",
+        "//third_party:flogger",
         "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:jsr305",
         "//third_party:junit4",
         "//third_party:truth",
         "@com_google_protobuf//:protobuf_java",
+        "@rules_java//java/runfiles",
     ],
 )
