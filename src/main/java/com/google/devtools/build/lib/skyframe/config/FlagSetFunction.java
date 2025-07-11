@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe.config;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.devtools.common.options.OptionsParser.STARLARK_SKIPPED_PREFIXES;
 
@@ -41,8 +40,11 @@ import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.common.options.GlobalRcUtils;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import javax.annotation.Nullable;
 
 /**
@@ -65,19 +67,19 @@ public final class FlagSetFunction implements SkyFunction {
       throws FlagSetFunctionException, InterruptedException {
     FlagSetValue.Key key = (FlagSetValue.Key) skyKey.argument();
     if (!key.enforceCanonical()) {
-      if (!key.getSclConfig().isEmpty()) {
+      if (!key.sclConfig().isEmpty()) {
         env.getListener()
             .handle(
                 Event.info(
                     String.format(
                         "Ignoring --scl_config=%s because --enforce_project_configs is not set",
-                        key.getSclConfig())));
+                        key.sclConfig())));
       }
       // --noenforce_project_configs. Nothing to do.
       return FlagSetValue.create(ImmutableSet.of(), ImmutableSet.of());
     }
     ProjectValue projectValue =
-        (ProjectValue) env.getValue(new ProjectValue.Key(key.getProjectFile()));
+        (ProjectValue) env.getValue(new ProjectValue.Key(key.projectFile()));
     if (projectValue == null) {
       return null;
     }
@@ -87,7 +89,7 @@ public final class FlagSetFunction implements SkyFunction {
     // return them in the Skyvalue for the caller to emit.
     ImmutableSet.Builder<Event> persistentMessages = ImmutableSet.builder();
     ImmutableSet<String> sclConfigAsStarlarkList =
-        getSclConfig(key, projectValue, persistentMessages);
+        getSclConfig(key, projectValue, persistentMessages, key.targets());
     return FlagSetValue.create(sclConfigAsStarlarkList, persistentMessages.build());
   }
 
@@ -96,14 +98,17 @@ public final class FlagSetFunction implements SkyFunction {
    * --scl_config}. Flags are a list of strings (not parsed through the options parser).
    */
   private static ImmutableSet<String> getSclConfig(
-      FlagSetValue.Key key, ProjectValue sclContent, ImmutableSet.Builder<Event> persistentMessages)
+      FlagSetValue.Key key,
+      ProjectValue sclContent,
+      ImmutableSet.Builder<Event> persistentMessages,
+      Set<Label> targets)
       throws FlagSetFunctionException {
-    Label projectFile = key.getProjectFile();
-    String sclConfigName = key.getSclConfig();
+    Label projectFile = key.projectFile();
+    String sclConfigName = key.sclConfig();
     EnforcementPolicy enforcementPolicy = sclContent.getEnforcementPolicy();
 
     ImmutableMap<String, ProjectValue.BuildableUnit> configs = sclContent.getBuildableUnits();
-    if (configs == null) {
+    if (configs == null || configs.isEmpty()) {
       // This project file doesn't define configs, so it must not be used for canonical configs.
       return ImmutableSet.of();
     }
@@ -112,12 +117,24 @@ public final class FlagSetFunction implements SkyFunction {
     ImmutableList<String> sclConfigValue = null;
     if (sclConfigName.isEmpty()) {
       // If there's no --scl_config, try to use the default_config.
-      // TODO: b/b/409382048 - apply correct default config semantics.
-      var firstDefault =
-          sclContent.getBuildableUnits().entrySet().stream()
-              .filter(entry -> entry.getValue().isDefault())
-              .findFirst();
-      if (firstDefault.isEmpty()) {
+      ImmutableMap<String, ProjectValue.BuildableUnit> buildableUnits =
+          sclContent.getBuildableUnits();
+
+      ImmutableList<ProjectValue.BuildableUnit> defaultBuildableUnits =
+          filterProjects(targets, buildableUnits);
+
+      // check that all targets resolves to the same set of flags.
+      // orders of flags should not matter here.
+      ImmutableSet<ProjectValue.BuildableUnit> resolvedDefaultBuildableUnit =
+          resolveSingleMatchingDefaultBuildableUnitForAllTargets(defaultBuildableUnits);
+      if (resolvedDefaultBuildableUnit.size() > 1) {
+        throw new FlagSetFunctionException(
+            new UnsupportedConfigException(
+                "Building target(s) with different configurations are not supported."),
+            Transience.PERSISTENT);
+      }
+
+      if (resolvedDefaultBuildableUnit.isEmpty()) {
         throw new FlagSetFunctionException(
             new UnsupportedConfigException(
                 String.format(
@@ -127,8 +144,9 @@ public final class FlagSetFunction implements SkyFunction {
                     supportedConfigsDesc(projectFile, configs))),
             Transience.PERSISTENT);
       }
-      sclConfigValue = firstDefault.get().getValue().flags();
-      sclConfigNameForMessage = firstDefault.get().getKey();
+      ProjectValue.BuildableUnit buildableUnit = resolvedDefaultBuildableUnit.iterator().next();
+      sclConfigValue = buildableUnit.flags();
+      sclConfigNameForMessage = buildableUnit.description();
     } else {
       if (!configs.containsKey(sclConfigName)) {
         // The user set --scl_config to an unknown config.
@@ -143,10 +161,9 @@ public final class FlagSetFunction implements SkyFunction {
     }
 
     // Replace --config=foo entries with their expanded definitions.
-    sclConfigValue =
-        expandConfigFlags(sclConfigName, sclConfigValue, key.getConfigFlagDefinitions());
+    sclConfigValue = expandConfigFlags(sclConfigName, sclConfigValue, key.configFlagDefinitions());
 
-    ImmutableList<String> buildOptionsAsStrings = getBuildOptionsAsStrings(key.getTargetOptions());
+    ImmutableList<String> buildOptionsAsStrings = getBuildOptionsAsStrings(key.targetOptions());
     ImmutableSet<String> optionsToApply = filterOptions(sclConfigValue, buildOptionsAsStrings);
 
     if (optionsToApply.isEmpty()) {
@@ -162,7 +179,7 @@ public final class FlagSetFunction implements SkyFunction {
         enforcementPolicy,
         alwaysAllowedConfigs,
         buildOptionsAsStrings,
-        key.getUserOptions(),
+        key.userOptions(),
         optionsToApply,
         persistentMessages,
         projectFile);
@@ -175,15 +192,53 @@ public final class FlagSetFunction implements SkyFunction {
   }
 
   /**
-   * Returns all {@link BuildableUnit buildable units} that contain {@code specificTarget} in the
-   * {@code targetPatterns} field.
+   * Returns all default {@link BuildableUnit buildable units} that contain the specific target
+   * in the {@code targetPatterns} field. If there are multiple matching default buildable units, an
+   * exception will be thrown.
    */
-  @SuppressWarnings("unused")
-  static ImmutableList<BuildableUnit> filterProjects(
-      ImmutableList<BuildableUnit> buildableUnits, Label targetToBuild) {
-    return buildableUnits.stream()
-        .filter(buildableUnit -> doesBuildableUnitMatchTarget(buildableUnit, targetToBuild))
-        .collect(toImmutableList());
+  private static ImmutableList<ProjectValue.BuildableUnit> filterProjects(
+      Set<Label> targets, ImmutableMap<String, ProjectValue.BuildableUnit> buildableUnits)
+      throws FlagSetFunctionException {
+    Map<Label, ProjectValue.BuildableUnit> targetsAndMatchingDefaultBuildableUnits =
+        new HashMap<>();
+    for (Label target : targets) {
+      for (ProjectValue.BuildableUnit buildableUnit : buildableUnits.values()) {
+        if (doesBuildableUnitMatchTarget(buildableUnit, target)) {
+          if (buildableUnit.isDefault()) {
+            if (targetsAndMatchingDefaultBuildableUnits.put(target, buildableUnit) != null) {
+              throw new FlagSetFunctionException(
+                  new UnsupportedConfigException(
+                      String.format(
+                          "Multiple matching default configs found for target %s. Please check your"
+                              + " project file and ensure that for target %s, there should be only"
+                              + " 1 matching default config.",
+                          target, target)),
+                  Transience.PERSISTENT);
+            }
+          }
+        }
+      }
+    }
+
+    return ImmutableList.copyOf(targetsAndMatchingDefaultBuildableUnits.values());
+  }
+
+  /**
+   * Takes a list of default buildable units and compares the flags values of all buildable units.
+   * If the flags from all buildable units are the same, returns the first matching buildable unit.
+   * Else returns the first matching buildable unit for each distinct set of flags.
+   *
+   * <p>The caller should check that there are no more than 1 buildable unit returned.
+   */
+  private static ImmutableSet<ProjectValue.BuildableUnit>
+      resolveSingleMatchingDefaultBuildableUnitForAllTargets(
+          ImmutableList<ProjectValue.BuildableUnit> defaultBuildableUnitsForAllTargets) {
+    LinkedHashMap<ImmutableList<String>, ProjectValue.BuildableUnit> flagsToFirstBuildableUnit =
+        new LinkedHashMap<>();
+    for (ProjectValue.BuildableUnit buildableUnit : defaultBuildableUnitsForAllTargets) {
+      flagsToFirstBuildableUnit.putIfAbsent(buildableUnit.flags(), buildableUnit);
+    }
+    return ImmutableSet.copyOf(flagsToFirstBuildableUnit.values());
   }
 
   /**
@@ -192,6 +247,9 @@ public final class FlagSetFunction implements SkyFunction {
    */
   @VisibleForTesting
   static boolean doesBuildableUnitMatchTarget(BuildableUnit buildableUnit, Label specificTarget) {
+    if (buildableUnit.targetPatternMatcher().isEmpty()) {
+      return true;
+    }
     return buildableUnit.targetPatternMatcher().contains(specificTarget);
   }
 
@@ -425,7 +483,6 @@ public final class FlagSetFunction implements SkyFunction {
     return ans;
   }
 
-
   private static final class FlagSetFunctionException extends SkyFunctionException {
     FlagSetFunctionException(Exception cause, Transience transience) {
       super(cause, transience);
@@ -437,5 +494,4 @@ public final class FlagSetFunction implements SkyFunction {
       super(msg);
     }
   }
-
 }

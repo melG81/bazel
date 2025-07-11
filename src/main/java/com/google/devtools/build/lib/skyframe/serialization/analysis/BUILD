@@ -15,10 +15,13 @@ java_library(
     name = "event_listener",
     srcs = ["RemoteAnalysisCachingEventListener.java"],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
+        ":remote_analysis_cache_client",
+        ":remote_analysis_caching_state",
+        "//src/main/java/com/google/devtools/build/lib/concurrent:thread_safety",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
         "//third_party:guava",
+        "//third_party:jsr305",
     ],
 )
 
@@ -27,46 +30,11 @@ java_library(
     srcs = ["RemoteAnalysisCachingDependenciesProvider.java"],
     deps = [
         ":options",
+        ":remote_analysis_cache_client",
+        ":remote_analysis_caching_state",
         "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
-        "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
-        "//third_party:guava",
-        "@com_google_protobuf//:protobuf_java",
-    ],
-)
-
-java_library(
-    name = "frontier_violation_event",
-    srcs = [
-        "FrontierViolationEvent.java",
-    ],
-)
-
-java_library(
-    name = "frontier_violation_checker",
-    srcs = [
-        "FrontierViolationChecker.java",
-    ],
-    deps = [
-        ":dependencies_provider",
-        ":event_listener",
-        ":frontier_violation_event",
-        ":options",
-        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_data",
-        "//src/main/java/com/google/devtools/build/lib/actions:action_lookup_key",
-        "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
-        "//src/main/java/com/google/devtools/build/lib/cmdline",
-        "//src/main/java/com/google/devtools/build/lib/events",
-        "//src/main/java/com/google/devtools/build/lib/skyframe:skyfocus_options",
-        "//src/main/java/com/google/devtools/build/lib/util:TestType",
-        "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
-        "//src/main/java/com/google/devtools/build/lib/util:detailed_exit_code",
-        "//src/main/java/com/google/devtools/build/lib/util:logging",
-        "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
-        "//src/main/java/com/google/devtools/build/skyframe",
-        "//src/main/protobuf:failure_details_java_proto",
         "//third_party:guava",
     ],
 )
@@ -134,6 +102,7 @@ java_library(
     deps = [
         ":file_dependency_key_support",
         ":invalidation_data_reference_or_future",
+        ":magic_bytes",
         ":value_or_future_map",
         "//src/main/java/com/google/devtools/build/lib/actions:file_metadata",
         "//src/main/java/com/google/devtools/build/lib/analysis:analysis_cluster",
@@ -148,6 +117,7 @@ java_library(
         "//third_party:guava",
         "//third_party:jsr305",
         "@com_google_protobuf//:protobuf_java",
+        "@zstd-jni",
     ],
 )
 
@@ -173,6 +143,7 @@ java_library(
     ],
     deps = [
         ":file_dependency_key_support",
+        ":magic_bytes",
         ":value_or_future_map",
         ":versioned_changes",
         "//src/main/java/com/google/devtools/build/lib/concurrent",
@@ -187,14 +158,17 @@ java_library(
         "//third_party:guava",
         "//third_party:jsr305",
         "@com_google_protobuf//:protobuf_java",
+        "@zstd-jni",
     ],
 )
 
 java_library(
     name = "versioned_changes_validator",
     srcs = [
+        "AlwaysMatch.java",
         "FileOpMatchMemoizingLookup.java",
         "FileOpMatchResultTypes.java",
+        "MatchIndicator.java",
         "NestedMatchMemoizingLookup.java",
         "NestedMatchResultTypes.java",
         "NoMatch.java",
@@ -256,16 +230,31 @@ java_library(
 )
 
 java_library(
+    name = "magic_bytes",
+    srcs = ["MagicBytes.java"],
+    deps = ["//third_party:guava"],
+)
+
+java_library(
+    name = "remote_analysis_cache_client",
+    srcs = ["RemoteAnalysisCacheClient.java"],
+    deps = [
+        "//third_party:guava",
+        "@com_google_protobuf//:protobuf_java",
+    ],
+)
+
+java_library(
     name = "remote_analysis_caching_services_supplier",
     srcs = ["RemoteAnalysisCachingServicesSupplier.java"],
     deps = [
         ":client_id",
         ":options",
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
+        ":remote_analysis_cache_client",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
+        "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
         "//third_party:guava",
         "//third_party:jsr305",
-        "@com_google_protobuf//:protobuf_java",
     ],
 )
 
@@ -283,7 +272,8 @@ java_library(
     name = "analysis_cache_invalidator",
     srcs = ["AnalysisCacheInvalidator.java"],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib/concurrent",
+        ":remote_analysis_cache_client",
+        ":remote_analysis_caching_state",
         "//src/main/java/com/google/devtools/build/lib/events",
         "//src/main/java/com/google/devtools/build/lib/profiler",
         "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
@@ -291,5 +281,15 @@ java_library(
         "//third_party:flogger",
         "//third_party:guava",
         "@com_google_protobuf//:protobuf_java",
+    ],
+)
+
+java_library(
+    name = "remote_analysis_caching_state",
+    srcs = ["RemoteAnalysisCachingState.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/skyframe/serialization",
+        "//src/main/java/com/google/devtools/build/skyframe:skyframe-objects",
+        "//third_party:guava",
     ],
 )

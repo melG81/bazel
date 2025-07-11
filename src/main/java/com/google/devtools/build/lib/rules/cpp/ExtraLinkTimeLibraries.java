@@ -15,27 +15,26 @@
 package com.google.devtools.build.lib.rules.cpp;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
-import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
+import com.google.devtools.build.lib.collect.nestedset.Depset.TypeException;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
-import com.google.devtools.build.lib.rules.cpp.ExtraLinkTimeLibrary.BuildLibraryOutput;
-import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.devtools.build.lib.packages.StarlarkInfo;
 import java.util.Collection;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import net.starlark.java.annot.Param;
 import net.starlark.java.annot.StarlarkMethod;
+import net.starlark.java.eval.Dict;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Sequence;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkFunction;
 import net.starlark.java.eval.StarlarkList;
 import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.eval.StarlarkValue;
-import net.starlark.java.eval.SymbolGenerator;
 import net.starlark.java.eval.Tuple;
 
 /**
@@ -49,92 +48,51 @@ public final class ExtraLinkTimeLibraries implements StarlarkValue {
   static final ExtraLinkTimeLibraries EMPTY = new ExtraLinkTimeLibraries(ImmutableList.of());
 
   /**
-   * We can have multiple different kinds of lists of libraries to include
-   * at link time.  We map from the class type to an actual instance.
+   * We can have multiple different kinds of lists of libraries to include at link time. We map from
+   * the class type to an actual instance.
    */
-  private final Collection<ExtraLinkTimeLibrary> extraLibraries;
+  private final Collection<StarlarkInfo> extraLibraries;
 
-  private ExtraLinkTimeLibraries(Collection<ExtraLinkTimeLibrary> extraLibraries) {
+  private ExtraLinkTimeLibraries(Collection<StarlarkInfo> extraLibraries) {
     this.extraLibraries = extraLibraries;
   }
 
-  /**
-   * Return the set of extra libraries.
-   */
-  public Collection<ExtraLinkTimeLibrary> getExtraLibraries() {
+  /** Creates an instance from a single library. */
+  public static ExtraLinkTimeLibraries of(StarlarkInfo library) {
+    return new ExtraLinkTimeLibraries(ImmutableList.of(library));
+  }
+
+  /** Return the set of extra libraries. */
+  public Collection<StarlarkInfo> getExtraLibraries() {
     return extraLibraries;
   }
 
   /** Get the set of extra libraries for Starlark. */
   @StarlarkMethod(name = "extra_libraries", documented = false, useStarlarkThread = true)
-  public Sequence<ExtraLinkTimeLibrary> getExtraLibrariesForStarlark(StarlarkThread thread)
+  public Sequence<StarlarkInfo> getExtraLibrariesForStarlark(StarlarkThread thread)
       throws EvalException {
     CcModule.checkPrivateStarlarkificationAllowlist(thread);
     return StarlarkList.immutableCopyOf(getExtraLibraries());
   }
 
-  public static final Builder builder() {
-    return new Builder();
-  }
-
-  /**
-   * Builder for {@link ExtraLinkTimeLibraries}.
-   */
-  public static final class Builder {
-    private final Map<Object, ExtraLinkTimeLibrary.Builder> libraries = new LinkedHashMap<>();
-
-    private Builder() {
-      // Nothing to do.
-    }
-
-    /**
-     * Build a {@link ExtraLinkTimeLibraries} object.
-     */
-    public ExtraLinkTimeLibraries build() {
-      if (libraries.isEmpty()) {
-        return EMPTY;
+  /** Merges a collection of {@link ExtraLinkTimeLibraries}. */
+  public static ExtraLinkTimeLibraries merge(
+      Iterable<ExtraLinkTimeLibraries> extraLinkTimeLibrariesCollection) {
+    Map<Object, ImmutableList.Builder<StarlarkInfo>> libraries = new LinkedHashMap<>();
+    for (ExtraLinkTimeLibraries extraLinkTimeLibraries : extraLinkTimeLibrariesCollection) {
+      for (StarlarkInfo extraLinkTimeLibrary : extraLinkTimeLibraries.getExtraLibraries()) {
+        Object key = extraLinkTimeLibrary.getValue("_key");
+        libraries.computeIfAbsent(key, k -> ImmutableList.builder()).add(extraLinkTimeLibrary);
       }
-      List<ExtraLinkTimeLibrary> extraLibraries = Lists.newArrayList();
-      for (ExtraLinkTimeLibrary.Builder builder : libraries.values()) {
-        extraLibraries.add(builder.build());
-      }
-      return new ExtraLinkTimeLibraries(extraLibraries);
     }
-
-    /** Add a transitive dependency. */
-    @CanIgnoreReturnValue
-    public final Builder addTransitive(ExtraLinkTimeLibraries dep) {
-      for (ExtraLinkTimeLibrary depLibrary : dep.getExtraLibraries()) {
-        add(depLibrary);
-      }
-      return this;
+    if (libraries.isEmpty()) {
+      return EMPTY;
     }
-
-    /** Add a single library to build. */
-    @CanIgnoreReturnValue
-    public final Builder add(ExtraLinkTimeLibrary depLibrary) {
-      Object key = depLibrary.getKey();
-      libraries.computeIfAbsent(key, k -> depLibrary.getBuilder());
-      libraries.get(key).addTransitive(depLibrary);
-      return this;
+    ImmutableList.Builder<StarlarkInfo> extraLibraries = ImmutableList.builder();
+    for (ImmutableList.Builder<StarlarkInfo> builder : libraries.values()) {
+      extraLibraries.add(StarlarkDefinedLinkTimeLibrary.merge(builder.build()));
     }
-  }
-
-  private BuildLibraryOutput buildLibraries(
-      RuleContext ruleContext,
-      boolean staticMode,
-      boolean forDynamicLibrary,
-      SymbolGenerator<?> symbolGenerator)
-      throws InterruptedException, RuleErrorException {
-    NestedSetBuilder<CcLinkingContext.LinkerInput> linkerInputs = NestedSetBuilder.linkOrder();
-    NestedSetBuilder<Artifact> runtimeLibraries = NestedSetBuilder.linkOrder();
-    for (ExtraLinkTimeLibrary extraLibrary : getExtraLibraries()) {
-      BuildLibraryOutput buildLibraryOutput =
-          extraLibrary.buildLibraries(ruleContext, staticMode, forDynamicLibrary, symbolGenerator);
-      linkerInputs.addTransitive(buildLibraryOutput.getLinkerInputs());
-      runtimeLibraries.addTransitive(buildLibraryOutput.getRuntimeLibraries());
-    }
-    return new BuildLibraryOutput(linkerInputs.build(), runtimeLibraries.build());
+    return new ExtraLinkTimeLibraries(extraLibraries.build());
   }
 
   @StarlarkMethod(
@@ -151,21 +109,43 @@ public final class ExtraLinkTimeLibraries implements StarlarkValue {
       boolean staticMode,
       boolean forDynamicLibrary,
       StarlarkThread thread)
-      throws EvalException, InterruptedException {
+      throws EvalException, InterruptedException, TypeException {
     CcModule.checkPrivateStarlarkificationAllowlist(thread);
-    try {
-      BuildLibraryOutput buildLibraryOutput =
-          buildLibraries(
-              starlarkRuleContext.getRuleContext(),
-              staticMode,
-              forDynamicLibrary,
-              thread.getSymbolGenerator());
-      Depset linkerInputs =
-          Depset.of(CcLinkingContext.LinkerInput.class, buildLibraryOutput.getLinkerInputs());
-      Depset runtimeLibraries = Depset.of(Artifact.class, buildLibraryOutput.getRuntimeLibraries());
-      return Tuple.pair(linkerInputs, runtimeLibraries);
-    } catch (RuleErrorException e) {
-      throw new EvalException(e);
+
+    NestedSetBuilder<StarlarkInfo> linkerInputs = NestedSetBuilder.linkOrder();
+    NestedSetBuilder<Artifact> runtimeLibraries = NestedSetBuilder.linkOrder();
+    for (StarlarkInfo extraLibrary : getExtraLibraries()) {
+      StarlarkFunction buildLibraryFunction =
+          extraLibrary.getValue("build_library_func", StarlarkFunction.class);
+      ImmutableMap.Builder<String, Object> objectMapBuilder = ImmutableMap.builder();
+      for (String key : extraLibrary.getFieldNames()) {
+        if (key.equals("_key") || key.equals("build_library_func")) {
+          continue;
+        }
+        objectMapBuilder.put(key, extraLibrary.getValue(key));
+      }
+      Dict<String, Object> objectMap = Dict.immutableCopyOf(objectMapBuilder.buildOrThrow());
+      Object response =
+          Starlark.call(
+              thread,
+              buildLibraryFunction,
+              ImmutableList.of(starlarkRuleContext, staticMode, forDynamicLibrary),
+              objectMap);
+      if (!(response instanceof Tuple responseTuple)
+          || responseTuple.size() != 2
+          || !(responseTuple.get(0) instanceof Depset)
+          || !(responseTuple.get(1) instanceof Depset)) {
+        throw new EvalException(
+            buildLibraryFunction.getName()
+                + " in "
+                + buildLibraryFunction.getLocation()
+                + " should return (depset[CcLinkingContext], depset[File])");
+      }
+      linkerInputs.addTransitive(((Depset) responseTuple.get(0)).getSet(StarlarkInfo.class));
+      runtimeLibraries.addTransitive(((Depset) responseTuple.get(1)).getSet(Artifact.class));
     }
+    Depset linkerInputsDepset = Depset.of(StarlarkInfo.class, linkerInputs.build());
+    Depset runtimeLibrariesDepset = Depset.of(Artifact.class, runtimeLibraries.build());
+    return Tuple.of(linkerInputsDepset, runtimeLibrariesDepset);
   }
 }

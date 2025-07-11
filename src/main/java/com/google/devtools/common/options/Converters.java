@@ -22,10 +22,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.devtools.build.lib.util.StringEncoding;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -422,7 +424,8 @@ public final class Converters {
     @Override
     public RegexPatternOption convert(String input) throws OptionsParsingException {
       try {
-        return RegexPatternOption.create(Pattern.compile(input));
+        return RegexPatternOption.create(
+            Pattern.compile(StringEncoding.internalToUnicode(input), Pattern.DOTALL));
       } catch (PatternSyntaxException e) {
         throw new OptionsParsingException("Not a valid regular expression: " + e.getMessage());
       }
@@ -695,6 +698,24 @@ public final class Converters {
   public static class PercentageConverter extends RangeConverter {
     public PercentageConverter() {
       super(0, 100);
+    }
+  }
+
+  /** Same as {@link PercentageConverter} but also supports being unset. */
+  public static class OptionalPercentageConverter extends Converter.Contextless<OptionalInt> {
+    public static final String UNSET = "-1";
+    private static final PercentageConverter PERCENTAGE_CONVERTER = new PercentageConverter();
+
+    @Override
+    public String getTypeDescription() {
+      return "an integer";
+    }
+
+    @Override
+    public OptionalInt convert(String input) throws OptionsParsingException {
+      return input.equals(UNSET)
+          ? OptionalInt.empty()
+          : OptionalInt.of(PERCENTAGE_CONVERTER.convert(input));
     }
   }
 

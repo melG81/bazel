@@ -143,7 +143,7 @@ import com.google.devtools.build.lib.pkgcache.LoadingOptions;
 import com.google.devtools.build.lib.pkgcache.PackageManager;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
-import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
+import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.runtime.QuiescingExecutorsImpl;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator;
 import com.google.devtools.build.lib.skyframe.AspectKeyCreator.AspectKey;
@@ -153,7 +153,6 @@ import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
 import com.google.devtools.build.lib.skyframe.DiffAwareness;
 import com.google.devtools.build.lib.skyframe.PackageFunction;
-import com.google.devtools.build.lib.skyframe.PackageRootsNoSymlinkCreation;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.SkyFunctionEnvironmentForTesting;
@@ -204,6 +203,7 @@ import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.StarlarkSemantics;
 import org.junit.After;
 import org.junit.Before;
@@ -353,10 +353,7 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     packageOptions.showLoadingProgress = true;
     packageOptions.globbingThreads = 7;
     skyframeExecutor.preparePackageLoading(
-        new PathPackageLocator(
-            outputBase,
-            ImmutableList.of(root),
-            BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY),
+        createPackageLocator(),
         packageOptions,
         buildLanguageOptions,
         UUID.randomUUID(),
@@ -368,6 +365,11 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     setUpSkyframe();
     this.actionLogBufferPathGenerator =
         new ActionLogBufferPathGenerator(directories.getActionTempsDirectory(getExecRoot()));
+  }
+
+  protected final PathPackageLocator createPackageLocator() {
+    return new PathPackageLocator(
+        outputBase, ImmutableList.of(root), BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY);
   }
 
   @ForOverride
@@ -518,9 +520,7 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     skyframeExecutor.injectExtraPrecomputedValues(
         ImmutableList.of(
             PrecomputedValue.injected(
-                RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE, Optional.empty()),
-            PrecomputedValue.injected(
-                RepositoryDelegatorFunction.VENDOR_DIRECTORY, Optional.empty())));
+                RepositoryDirectoryValue.VENDOR_DIRECTORY, Optional.empty())));
   }
 
   protected void setPackageOptions(String... options) throws Exception {
@@ -670,7 +670,8 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     view = new BuildViewForTesting(directories, ruleClassProvider, skyframeExecutor, null);
     view.setConfigurationForTesting(targetConfig);
 
-    view.setArtifactRoots(new PackageRootsNoSymlinkCreation(Root.fromPath(rootDirectory)));
+    Root root = Root.fromPath(rootDirectory);
+    view.getArtifactFactory().setPackageRoots(pkgId -> root);
   }
 
   protected CachingAnalysisEnvironment getTestAnalysisEnvironment() throws InterruptedException {
@@ -2234,22 +2235,25 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
 
   protected ImmutableList<String> baselineCoverageArtifactBasenames(ConfiguredTarget target)
       throws Exception {
-    Artifact baselineCoverage =
-        target.get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR).getBaselineCoverageArtifact();
-    if (baselineCoverage == null) {
-      return ImmutableList.of();
-    }
-    ImmutableList.Builder<String> basenames = ImmutableList.builder();
-    var baselineCoverageAction = (BaselineCoverageAction) getGeneratingAction(baselineCoverage);
-    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-    baselineCoverageAction
-        .newDeterministicWriter(ActionsTestUtil.createContext(reporter))
-        .writeTo(bytes);
+    ImmutableList<Artifact> baselineCoverageArtifacts =
+        target
+            .get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR)
+            .getBaselineCoverageArtifacts()
+            .toList();
 
-    for (String line : Splitter.on('\n').split(bytes.toString(UTF_8))) {
-      if (line.startsWith("SF:")) {
-        String basename = line.substring(line.lastIndexOf('/') + 1);
-        basenames.add(basename);
+    ImmutableList.Builder<String> basenames = ImmutableList.builder();
+    for (Artifact baselineCoverage : baselineCoverageArtifacts) {
+      var baselineCoverageAction = (BaselineCoverageAction) getGeneratingAction(baselineCoverage);
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      baselineCoverageAction
+          .newDeterministicWriter(ActionsTestUtil.createContext(reporter))
+          .writeTo(bytes);
+
+      for (String line : Splitter.on('\n').split(bytes.toString(UTF_8))) {
+        if (line.startsWith("SF:")) {
+          String basename = line.substring(line.lastIndexOf('/') + 1);
+          basenames.add(basename);
+        }
       }
     }
     return basenames.build();
@@ -2350,7 +2354,7 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
   }
 
   protected final String getImplicitOutputPath(
-      ConfiguredTarget target, SafeImplicitOutputsFunction outputFunction) {
+      ConfiguredTarget target, SafeImplicitOutputsFunction outputFunction) throws EvalException {
     Rule rule;
     try {
       rule = (Rule) skyframeExecutor.getPackageManager().getTarget(reporter, target.getLabel());
@@ -2369,7 +2373,7 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
    * the result of the {@code outputFunction}.
    */
   protected final Artifact getImplicitOutputArtifact(
-      ConfiguredTarget target, SafeImplicitOutputsFunction outputFunction) {
+      ConfiguredTarget target, SafeImplicitOutputsFunction outputFunction) throws EvalException {
     return getBinArtifact(getImplicitOutputPath(target, outputFunction), target);
   }
 

@@ -280,11 +280,10 @@ public final class RuleClassTest extends PackageLoadingTestCase {
     return packageFactory.newPackageBuilder(
         PackageIdentifier.createInMainRepo(TEST_PACKAGE_NAME),
         RootedPath.toRootedPath(root, testBuildfilePath),
-        "TESTING",
         Optional.empty(),
         Optional.empty(),
         StarlarkSemantics.DEFAULT,
-        /* repositoryMapping= */ RepositoryMapping.ALWAYS_FALLBACK,
+        /* repositoryMapping= */ RepositoryMapping.EMPTY,
         /* mainRepositoryMapping= */ null,
         /* cpuBoundSemaphore= */ null,
         /* generatorMap= */ null,
@@ -660,6 +659,38 @@ public final class RuleClassTest extends PackageLoadingTestCase {
     Rule ruleWithSlash = createRule(ruleClass, "myRule/with/slash", ImmutableMap.of());
     assertThat(Iterables.getOnlyElement(ruleWithSlash.getOutputFiles()).getName())
         .isEqualTo("myRule/with/libslash.bar");
+  }
+
+  @Test
+  public void implicitOutputs_usingUnsupportedAttributeType_failsCleanly() throws Exception {
+    RuleClass ruleClass =
+        newRuleClass(
+            "ruleClass",
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            ImplicitOutputsFunction.fromTemplates("%{truthiness}"),
+            null,
+            DUMMY_CONFIGURED_TARGET_FACTORY,
+            AdvertisedProviderSet.EMPTY,
+            null,
+            ImmutableSet.of(),
+            true,
+            attr("truthiness", BOOLEAN).build());
+
+    Map<String, Object> attributeValues = new HashMap<>();
+    attributeValues.put("truthiness", true);
+    attributeValues.put("name", "myrule");
+
+    reporter.removeHandler(failFastHandler);
+    Rule myRule = createRule(ruleClass, "myrule", attributeValues);
+    assertThat(myRule.containsErrors()).isTrue();
+    assertContainsEvent(
+        "In rule //testpackage:myrule: For attribute 'truthiness' in outputs: Attributes of type"
+            + " boolean cannot be used in an outputs substitution template");
   }
 
   /**

@@ -209,8 +209,9 @@ public class BlazeRuntimeWrapper {
                 workspaceSetupWarnings,
                 /* waitTimeInMs= */ 0L,
                 /* commandStartTime= */ 0L,
-                extensions.stream().map(Any::pack).collect(toImmutableList()),
+                /* idleTaskResultsFromPreviousIdlePeriod= */ ImmutableList.of(),
                 this.crashMessages::add,
+                extensions.stream().map(Any::pack).collect(toImmutableList()),
                 NO_OP_COMMAND_EXTENSION_REPORTER,
                 /* attemptNumber= */ 1,
                 /* buildRequestIdOverride= */ null,
@@ -417,7 +418,12 @@ public class BlazeRuntimeWrapper {
           try (SilentCloseable c = Profiler.instance().profile("syncPackageLoading")) {
             env.syncPackageLoading(lastRequest);
           }
-          buildTool.buildTargets(lastRequest, lastResult, null, optionsParser);
+          buildTool.buildTargets(
+              lastRequest,
+              lastResult,
+              null,
+              optionsParser,
+              /* targetsForProjectResolution= */ null);
           detailedExitCode = DetailedExitCode.success();
         } catch (RuntimeException | Error e) {
           crash = Crash.from(e);

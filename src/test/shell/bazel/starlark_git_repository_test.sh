@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -450,6 +450,8 @@ EOF
 }
 
 function test_git_repository_not_refetched_on_server_restart() {
+  # Testing refetch behavior, so disable the repo contents cache
+  add_to_bazelrc "common --repo_contents_cache="
   local repo_dir=$TEST_TMPDIR/repos/refetch
 
   rm MODULE.bazel
@@ -494,6 +496,8 @@ EOF
 }
 
 function test_git_repository_not_refetched_on_server_restart_strip_prefix() {
+  # Testing refetch behavior, so disable the repo contents cache
+  add_to_bazelrc "common --repo_contents_cache="
   local repo_dir=$TEST_TMPDIR/repos/refetch
   # Change the strip_prefix which should cause a new checkout
   rm MODULE.bazel
@@ -517,6 +521,8 @@ EOF
 
 
 function test_git_repository_refetched_when_commit_changes() {
+  # Testing refetch behavior, so disable the repo contents cache
+  add_to_bazelrc "common --repo_contents_cache="
   local repo_dir=$TEST_TMPDIR/repos/refetch
 
   rm MODULE.bazel
@@ -542,6 +548,8 @@ EOF
 }
 
 function test_git_repository_and_nofetch() {
+  # Testing refetch behavior, so disable the repo contents cache
+  add_to_bazelrc "common --repo_contents_cache="
   local repo_dir=$TEST_TMPDIR/repos/refetch
 
   rm MODULE.bazel
@@ -562,7 +570,7 @@ git_repository(name='g', remote='$repo_dir', commit='db134ae9b644d8237954a8e6f1e
 EOF
 
   bazel build --nofetch @g//:g >& $TEST_log || fail "Build failed"
-  expect_log "External repository '+git_repository+g' is not up-to-date"
+  expect_log "External repository '@@+git_repository+g' is not up-to-date"
   assert_contains "GIT 1" bazel-genfiles/external/+git_repository+g/go
   bazel build  @g//:g >& $TEST_log || fail "Build failed"
   assert_contains "GIT 2" bazel-genfiles/external/+git_repository+g/go
@@ -574,7 +582,7 @@ git_repository(name='g', remote='$repo_dir', commit='17ea13b242e4cbcc27a6ef74593
 EOF
 
   bazel build --nofetch @g//:g >& $TEST_log || fail "Build failed"
-  expect_log "External repository '+git_repository+g' is not up-to-date"
+  expect_log "External repository '@@+git_repository+g' is not up-to-date"
   bazel build  @g//:g >& $TEST_log || fail "Build failed"
   assert_contains "GIT 2" bazel-genfiles/external/+git_repository+g/go
 

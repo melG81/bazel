@@ -31,6 +31,12 @@ import java.util.Optional;
 public interface ImportantOutputHandler extends ActionContext {
 
   /**
+   * A threshold to pass to {@link com.google.devtools.build.lib.profiler.GoogleAutoProfilerUtils}
+   * for profiling {@link ImportantOutputHandler} operations.
+   */
+  Duration LOG_THRESHOLD = Duration.ofMillis(100);
+
+  /**
    * Informs this handler that top-level outputs have been built.
    *
    * <p>The handler may verify that remotely stored outputs are still available. Returns a map from
@@ -109,13 +115,6 @@ public interface ImportantOutputHandler extends ActionContext {
    */
   void processWorkspaceStatusOutputs(Path stableOutput, Path volatileOutput)
       throws ImportantOutputException, InterruptedException;
-
-  /**
-   * A threshold to pass to {@link
-   * com.google.devtools.build.lib.profiler.GoogleAutoProfilerUtils#logged(String, Duration)} for
-   * profiling {@link ImportantOutputHandler} operations.
-   */
-  Duration LOG_THRESHOLD = Duration.ofMillis(100);
 
   /**
    * Represents artifacts that need to be regenerated via action rewinding, optionally along with

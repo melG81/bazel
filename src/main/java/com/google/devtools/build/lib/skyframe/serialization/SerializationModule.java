@@ -29,7 +29,7 @@ import java.util.function.Supplier;
 public class SerializationModule extends BlazeModule {
 
   @Override
-  public final void workspaceInit(
+  public void workspaceInit(
       BlazeRuntime runtime, BlazeDirectories directories, WorkspaceBuilder builder) {
     if (!directories.inWorkspace()) {
       // Serialization only works when the Bazel server is invoked from a workspace.
@@ -48,10 +48,14 @@ public class SerializationModule extends BlazeModule {
   @ForOverride
   protected Supplier<ObjectCodecRegistry> getAnalysisCodecRegistrySupplier(
       BlazeRuntime runtime, BlazeDirectories directories) {
-    return SerializationRegistrySetupHelpers.createAnalysisCodecRegistrySupplier(
-        runtime.getRuleClassProvider(),
-        SerializationRegistrySetupHelpers.makeReferenceConstants(
-            directories, runtime.getRuleClassProvider(), directories.getWorkspace().getBaseName()));
+    return () ->
+        SerializationRegistrySetupHelpers.initializeAnalysisCodecRegistryBuilder(
+                runtime.getRuleClassProvider(),
+                SerializationRegistrySetupHelpers.makeReferenceConstants(
+                    directories,
+                    runtime.getRuleClassProvider(),
+                    directories.getWorkspace().getBaseName()))
+            .build();
   }
 
   @ForOverride

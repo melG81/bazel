@@ -50,7 +50,6 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventArtifactUploader
 import com.google.devtools.build.lib.buildeventstream.LocalFilesArtifactUploader;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.BuildRequestOptions;
-import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
@@ -124,7 +123,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Predicate;
-import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 
 /** RemoteModule provides distributed cache and remote execution for Bazel. */
@@ -393,16 +391,15 @@ public final class RemoteModule extends BlazeModule {
 
     // TODO(bazel-team): Consider adding a warning or more validation if the remoteDownloadRegex is
     // used without Build without the Bytes.
-    ImmutableList.Builder<Pattern> patternsToDownloadBuilder = ImmutableList.builder();
+    ImmutableList.Builder<Predicate<String>> patternsToDownloadBuilder = ImmutableList.builder();
     if (remoteOptions.remoteOutputsMode != RemoteOutputsMode.ALL) {
       for (RegexPatternOption patternOption : remoteOptions.remoteDownloadRegex) {
-        patternsToDownloadBuilder.add(patternOption.regexPattern());
+        patternsToDownloadBuilder.add(patternOption.matcher());
       }
     }
 
     remoteOutputChecker =
         new RemoteOutputChecker(
-            new JavaClock(),
             env.getCommandName(),
             remoteOptions.remoteOutputsMode,
             patternsToDownloadBuilder.build(),
@@ -1084,7 +1081,6 @@ public final class RemoteModule extends BlazeModule {
         remoteOutputService.setRemoteOutputChecker(remoteOutputChecker);
         remoteOutputService.setActionInputFetcher(actionInputFetcher);
         remoteOutputService.setLeaseService(leaseService);
-        remoteOutputService.setFileCacheSupplier(env::getFileCache);
         env.getEventBus().register(outputService);
       }
     }

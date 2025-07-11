@@ -323,10 +323,6 @@ public class RuleContext extends TargetContext
     return getConfiguration().getGenfilesDirectory(getLabel().getRepository());
   }
 
-  public ArtifactRoot getCoverageMetadataDirectory() {
-    return getConfiguration().getCoverageMetadataDirectory(getLabel().getRepository());
-  }
-
   public ArtifactRoot getTestLogsDirectory() {
     return getConfiguration().getTestLogsDirectory(getLabel().getRepository());
   }
@@ -1266,6 +1262,15 @@ public class RuleContext extends TargetContext
       return null;
     }
     ResolvedToolchainContext toolchainContext = getToolchainContext(execGroup);
+    return toolchainContext == null ? null : toolchainContext.executionPlatform();
+  }
+
+  @Nullable
+  public PlatformInfo getExecutionPlatformForToolchainType(Label toolchainType) {
+    if (toolchainContexts == null) {
+      return null;
+    }
+    ResolvedToolchainContext toolchainContext = getToolchainContextForToolchainType(toolchainType);
     return toolchainContext == null ? null : toolchainContext.executionPlatform();
   }
 

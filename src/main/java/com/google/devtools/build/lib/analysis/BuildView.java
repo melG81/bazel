@@ -55,6 +55,8 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.QuiescingExecutors;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadCompatible;
 import com.google.devtools.build.lib.events.Event;
@@ -395,7 +397,7 @@ public class BuildView {
                 checkNotNull(buildResultListener), // non-null for skymeld.
                 (configuredTargets, allTargetsToTest) ->
                     memoizedGetCoverageArtifactsHelper(
-                        configuredTargets, allTargetsToTest, eventHandler, eventBus, loadingResult),
+                        configuredTargets, allTargetsToTest, eventHandler, eventBus),
                 keepGoing,
                 skipIncompatibleExplicitTargets,
                 checkForActionConflicts,
@@ -647,7 +649,7 @@ public class BuildView {
     // Coverage
     artifactsToBuild.addAll(
         memoizedGetCoverageArtifactsHelper(
-            configuredTargets, allTargetsToTest, eventHandler, eventBus, loadingResult));
+            configuredTargets, allTargetsToTest, eventHandler, eventBus));
 
     // TODO(cparsons): If extra actions are ever removed, this filtering step can probably be
     //  removed as well: the only concern would be action conflicts involving coverage artifacts,
@@ -698,7 +700,6 @@ public class BuildView {
           exclusiveTests,
           exclusiveIfLocalTests,
           topLevelOptions,
-          loadingResult.getWorkspaceName(),
           skyframeAnalysisResult.getTargetsWithConfiguration());
     }
 
@@ -742,7 +743,6 @@ public class BuildView {
         exclusiveIfLocalTests,
         topLevelOptions,
         skyframeAnalysisResult.getPackageRoots(),
-        loadingResult.getWorkspaceName(),
         skyframeAnalysisResult.getTargetsWithConfiguration());
   }
 
@@ -784,16 +784,13 @@ public class BuildView {
         .build();
   }
 
-  private static ImmutableList<Artifact> getBaselineCoverageArtifacts(
+  private static NestedSet<Artifact> getBaselineCoverageArtifacts(
       Collection<ConfiguredTarget> configuredTargets) {
-    var baselineCoverageArtifacts = ImmutableList.<Artifact>builder();
+    var baselineCoverageArtifacts = NestedSetBuilder.<Artifact>stableOrder();
     for (ConfiguredTarget target : configuredTargets) {
       InstrumentedFilesInfo provider = target.get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR);
       if (provider != null) {
-        Artifact baselineCoverage = provider.getBaselineCoverageArtifact();
-        if (baselineCoverage != null) {
-          baselineCoverageArtifacts.add(baselineCoverage);
-        }
+        baselineCoverageArtifacts.addTransitive(provider.getBaselineCoverageArtifacts());
       }
     }
     return baselineCoverageArtifacts.build();
@@ -924,7 +921,9 @@ public class BuildView {
   @FunctionalInterface
   public interface ExecutionSetup {
     void prepareForExecution()
-        throws AbruptExitException, BuildFailedException, InvalidConfigurationException,
+        throws AbruptExitException,
+            BuildFailedException,
+            InvalidConfigurationException,
             InterruptedException;
   }
 
@@ -948,13 +947,11 @@ public class BuildView {
       Set<ConfiguredTarget> configuredTargets,
       Set<ConfiguredTarget> allTargetsToTest,
       EventHandler eventHandler,
-      EventBus eventBus,
-      TargetPatternPhaseValue loadingResult)
+      EventBus eventBus)
       throws InterruptedException {
     if (memoizedCoverageArtifacts == null) {
       memoizedCoverageArtifacts =
-          constructCoverageArtifacts(
-              configuredTargets, allTargetsToTest, eventHandler, eventBus, loadingResult);
+          constructCoverageArtifacts(configuredTargets, allTargetsToTest, eventHandler, eventBus);
     }
     return memoizedCoverageArtifacts;
   }
@@ -963,8 +960,7 @@ public class BuildView {
       Set<ConfiguredTarget> configuredTargets,
       Set<ConfiguredTarget> allTargetsToTest,
       EventHandler eventHandler,
-      EventBus eventBus,
-      TargetPatternPhaseValue loadingResult)
+      EventBus eventBus)
       throws InterruptedException {
     if (coverageReportActionFactory == null) {
       return ImmutableSet.of();
@@ -979,7 +975,7 @@ public class BuildView {
             getArtifactFactory(),
             skyframeExecutor.getActionKeyContext(),
             CoverageReportValue.COVERAGE_REPORT_KEY,
-            loadingResult.getWorkspaceName());
+            ruleClassProvider.getRunfilesPrefix());
     if (actionsWrapper == null) {
       return ImmutableSet.of();
     }

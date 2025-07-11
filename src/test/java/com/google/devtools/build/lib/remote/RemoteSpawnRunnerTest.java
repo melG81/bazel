@@ -70,7 +70,6 @@ import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
-import com.google.devtools.build.lib.actions.StaticInputMetadataProvider;
 import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -187,7 +186,7 @@ public class RemoteSpawnRunnerTest {
     fs = new InMemoryFileSystem(new JavaClock(), DigestHashFunction.SHA256);
     execRoot = fs.getPath("/exec/root");
     execRoot.createDirectoryAndParents();
-    artifactRoot = ArtifactRoot.asDerivedRoot(execRoot, RootType.Output, "outputs");
+    artifactRoot = ArtifactRoot.asDerivedRoot(execRoot, RootType.OUTPUT, "outputs");
     artifactRoot.getRoot().asPath().createDirectoryAndParents();
     tempPathGenerator = new TempPathGenerator(fs.getPath("/execroot/_tmp/actions/remote"));
     logDir = fs.getPath("/server-logs");
@@ -284,8 +283,6 @@ public class RemoteSpawnRunnerTest {
             execRoot.asFragment(),
             artifactRoot.getRoot().asPath().relativeTo(execRoot).getPathString(),
             new ActionInputMap(0),
-            ImmutableList.of(),
-            StaticInputMetadataProvider.empty(),
             actionInputFetcher);
 
     return new FakeSpawnExecutionContext(

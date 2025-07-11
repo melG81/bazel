@@ -59,6 +59,8 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
   private final CommandLine commandLine;
   private final ParameterFileType type;
   private final boolean hasInputArtifactToExpand;
+  private final boolean makeExecutable;
+  private final String mnemonic;
 
   /**
    * Creates a new instance.
@@ -67,10 +69,22 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
    * @param output the Artifact that will be created by executing this Action
    * @param commandLine the contents to be written to the file
    * @param type the type of the file
+   * @param makeExecutable whether the output file should be made executable
    */
   public ParameterFileWriteAction(
-      ActionOwner owner, Artifact output, CommandLine commandLine, ParameterFileType type) {
-    this(owner, NestedSetBuilder.emptySet(Order.STABLE_ORDER), output, commandLine, type);
+      ActionOwner owner,
+      Artifact output,
+      CommandLine commandLine,
+      ParameterFileType type,
+      boolean makeExecutable) {
+    this(
+        owner,
+        NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+        output,
+        commandLine,
+        type,
+        makeExecutable,
+        AbstractFileWriteAction.MNEMONIC);
   }
 
   /**
@@ -82,17 +96,33 @@ public final class ParameterFileWriteAction extends AbstractFileWriteAction {
    * @param output the Artifact that will be created by executing this Action
    * @param commandLine the contents to be written to the file
    * @param type the type of the file
+   * @param makeExecutable whether the output file should be made executable
+   * @param mnemonic the mnemonic for this action, or null if the default should be used
    */
   public ParameterFileWriteAction(
       ActionOwner owner,
       NestedSet<Artifact> inputs,
       Artifact output,
       CommandLine commandLine,
-      ParameterFileType type) {
+      ParameterFileType type,
+      boolean makeExecutable,
+      String mnemonic) {
     super(owner, inputs, output);
     this.commandLine = commandLine;
     this.type = type;
     this.hasInputArtifactToExpand = !inputs.isEmpty();
+    this.makeExecutable = makeExecutable;
+    this.mnemonic = mnemonic;
+  }
+
+  @Override
+  public boolean makeExecutable() {
+    return makeExecutable;
+  }
+
+  @Override
+  public String getMnemonic() {
+    return mnemonic;
   }
 
   @VisibleForTesting

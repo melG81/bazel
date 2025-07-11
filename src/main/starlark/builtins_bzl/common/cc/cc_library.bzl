@@ -18,6 +18,7 @@ load(":common/cc/attrs.bzl", "common_attrs", "linkstatic_doc")
 load(":common/cc/cc_common.bzl", "cc_common")
 load(":common/cc/cc_helper.bzl", "cc_helper")
 load(":common/cc/cc_info.bzl", "CcInfo")
+load(":common/cc/link/create_linkstamp.bzl", "create_linkstamp")
 load(":common/cc/semantics.bzl", "semantics")
 
 cc_internal = _builtins.internal.cc_internal
@@ -111,10 +112,9 @@ def _cc_library_impl(ctx):
     linking_contexts.extend(cc_helper.get_linking_contexts_from_deps(ctx.attr.implementation_deps))
     if ctx.file.linkstamp != None:
         linkstamps = []
-        linkstamps.append(cc_internal.create_linkstamp(
-            actions = ctx.actions,
+        linkstamps.append(create_linkstamp(
             linkstamp = ctx.file.linkstamp,
-            compilation_context = compilation_context,
+            headers = compilation_context.headers,
         ))
         linkstamps_linker_input = cc_common.create_linker_input(
             owner = ctx.label,
@@ -510,7 +510,7 @@ def _check_no_repeated_srcs(ctx):
     seen = {}
     for target in ctx.attr.srcs:
         if DefaultInfo in target:
-            for file in target.files.to_list():
+            for file in target[DefaultInfo].files.to_list():
                 extension = "." + file.extension
                 if extension not in cc_helper.extensions.CC_HEADER:
                     if extension in cc_helper.extensions.CC_AND_OBJC:
@@ -524,7 +524,7 @@ ALLOWED_SRC_FILES = []
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.CC_SOURCE)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.C_SOURCE)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.CC_HEADER)
-ALLOWED_SRC_FILES.extend(cc_helper.extensions.ASSESMBLER_WITH_C_PREPROCESSOR)
+ALLOWED_SRC_FILES.extend(cc_helper.extensions.ASSEMBLER_WITH_C_PREPROCESSOR)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.ASSEMBLER)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.ARCHIVE)
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.PIC_ARCHIVE)
@@ -535,7 +535,7 @@ ALLOWED_SRC_FILES.extend(cc_helper.extensions.SHARED_LIBRARY)
 SRCS_FOR_COMPILATION = []
 SRCS_FOR_COMPILATION.extend(cc_helper.extensions.CC_SOURCE)
 SRCS_FOR_COMPILATION.extend(cc_helper.extensions.C_SOURCE)
-SRCS_FOR_COMPILATION.extend(cc_helper.extensions.ASSESMBLER_WITH_C_PREPROCESSOR)
+SRCS_FOR_COMPILATION.extend(cc_helper.extensions.ASSEMBLER_WITH_C_PREPROCESSOR)
 SRCS_FOR_COMPILATION.extend(cc_helper.extensions.ASSEMBLER)
 
 ALLOWED_SRC_FILES.extend(cc_helper.extensions.OBJECT_FILE)
